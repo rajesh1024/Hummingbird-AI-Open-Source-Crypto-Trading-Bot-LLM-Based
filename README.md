@@ -42,11 +42,13 @@ hummingbird/
 
 1. Clone the repository
 2. Install dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
 3. Set up environment variables:
+
 ```bash
 cp .env.example .env
 # Edit .env with your API keys and configurations
@@ -55,13 +57,14 @@ cp .env.example .env
 ## Configuration
 
 1. Configure your trading parameters in `config/config.yaml`:
+
    - Trading timeframes
    - Technical indicator parameters
    - LLM model settings
    - Confidence thresholds
    - Historical data settings
-
 2. Set up your environment variables in `.env`:
+
    - Binance API credentials
    - LLM API keys (if using cloud models)
    - Other configuration parameters
@@ -69,25 +72,28 @@ cp .env.example .env
 ## Usage
 
 1. Run the main trading system:
+
 ```bash
 # Standard mode with default model
 python src/main.py --symbol BTC/USDT
 
 # Standard mode with specific model
-python src/main.py --symbol BTC/USDT --model gemini-pro
+python src/main.py --symbol BTC/USDT --model gemini
 
 # Scalping mode (optimized for short-term trades)
 python src/main.py --symbol BTC/USDT --scalping
 
 # Scalping mode with specific model
-python src/main.py --symbol BTC/USDT --scalping --model gemini-pro
+python src/main.py --symbol BTC/USDT --scalping --model gemini
 ```
 
 Available model options:
+
 - `gemini-pro`: Google's Gemini Pro model (requires API key)
 - `local`: Local model (default if no model specified)
 
 The system will:
+
 - Fetch historical data for all configured timeframes
 - Calculate technical indicators
 - Identify market patterns (order blocks, supply/demand zones)
@@ -99,18 +105,24 @@ The system will:
 The system supports various LLM models:
 
 ### Local Models (Recommended)
+
 - Local models for privacy and speed
 - No API costs
 - Lower latency
 
 ### Cloud Models
+
 #### Gemini Pro Setup
+
 1. Get your API key from Google AI Studio (https://makersuite.google.com/app/apikey)
 2. Add to your `.env` file:
+
 ```
 GEMINI_API_KEY=your_api_key_here
 ```
+
 3. Configure in `config/config.yaml`:
+
 ```yaml
 llm:
   default_model: "gemini-pro"
@@ -121,6 +133,7 @@ llm:
 ```
 
 Gemini Pro features:
+
 - Advanced reasoning capabilities
 - Real-time market analysis
 - Pattern recognition
@@ -129,4 +142,4 @@ Gemini Pro features:
 
 ## License
 
-MIT License 
+MIT License
