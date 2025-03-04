@@ -1,0 +1,92 @@
+trading:
+  timeframes:
+    swing:
+      - 1d
+      - 4h
+      - 1h
+      - 15m
+      - 5m
+    scalping:
+      - 15m
+      - 5m
+  
+  technical_indicators:
+    swing:
+      - RSI
+      - MACD
+      - SMA_20
+      - SMA_50
+    scalping:
+      - RSI
+      - MACD
+      - SMA_20
+      - EMA_9
+  
+  smc_strategy:
+    order_blocks: true
+    supply_zones: true
+    demand_zones: true
+    fair_value_gaps: true
+    liquidity_levels: true
+
+llm:
+  default_model: "mistral"  # Default model to use
+  models:
+    mistral:
+      type: "local"
+      model_path: "models/mistral-7b-instruct-v0.1.Q4_K_M.gguf"
+      context_length: 8192
+      max_tokens: 2048
+      temperature: 0.7
+      top_p: 0.9
+      system_prompt: |
+        You are an expert cryptocurrency trading analyst with deep knowledge of technical analysis and market psychology.
+        Your task is to analyze market data and provide trading signals with high confidence.
+        Focus on identifying strong reversal or continuation patterns across multiple timeframes.
+        Consider both technical indicators and market structure (support/resistance, order blocks, etc.).
+        Provide clear reasoning for your analysis and specific price levels for entry, stop-loss, and take-profit targets.
+    
+    gemini:
+      type: "api"
+      api_key: "${GEMINI_API_KEY}"  # Will be loaded from environment
+      model_name: "gemini-2.0-flash"  # Updated to latest available model
+      max_tokens: 2048
+      temperature: 0.7
+      system_prompt: |
+        You are an expert cryptocurrency trading analyst with deep knowledge of technical analysis and market psychology.
+        Your task is to analyze market data and provide trading signals with high confidence.
+        Focus on identifying strong reversal or continuation patterns across multiple timeframes.
+        Consider both technical indicators and market structure (support/resistance, order blocks, etc.).
+        Provide clear reasoning for your analysis and specific price levels for entry, stop-loss, and take-profit targets.
+
+  confidence_threshold: 0.60
+
+data:
+  source: "binance"
+  historical_data_days: 365
+  update_interval: 20  # seconds
+  rate_limit: true  # Enable rate limiting for API calls
+
+risk_management:
+  swing:
+    max_position_size: 0.1  # 10% of portfolio
+    max_daily_trades: 5
+    stop_loss_percentage: 0.02  # 2%
+    take_profit_levels:
+      - 0.03  # 3%
+      - 0.05  # 5%
+      - 0.08  # 8%
+  scalping:
+    max_position_size: 0.05  # 5% of portfolio
+    max_daily_trades: 10
+    stop_loss_percentage: 0.01  # 1%
+    take_profit_levels:
+      - 0.02  # 2%
+      - 0.03  # 3%
+
+visualization:
+  show_progress: true
+  show_market_status: true
+  show_technical_indicators: true
+  show_patterns: true
+  show_signals: true 

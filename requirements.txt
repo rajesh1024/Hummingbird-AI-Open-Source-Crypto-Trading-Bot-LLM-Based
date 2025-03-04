@@ -1,0 +1,17 @@
+pandas>=2.0.0
+numpy==1.23.5
+ccxt>=4.0.0
+ta>=0.10.0
+python-dotenv>=1.0.0
+transformers>=4.36.0
+torch>=2.0.0
+sentencepiece>=0.1.99
+accelerate>=0.25.0
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+pandas-ta>=0.3.14b
+rich>=13.7.0
+ctransformers>=0.2.27
+google-generativeai
+# ta-lib>=0.4.28  # Optional: Requires TA-Lib C library. Install with: brew install ta-lib (macOS) or apt-get install ta-lib (Linux) 
