@@ -22,33 +22,69 @@ class TechnicalAnalysis:
         Calculate essential technical indicators
         """
         try:
+            if df is None or df.empty:
+                self.logger.warning("Input DataFrame is None or empty")
+                return pd.DataFrame()
+            
             # Create a copy of the dataframe to avoid SettingWithCopyWarning
             df = df.copy()
             
+            # Ensure required columns exist
+            required_columns = ['open', 'high', 'low', 'close', 'volume']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                self.logger.error(f"Missing required columns: {missing_columns}")
+                return pd.DataFrame()
+            
+            # Ensure we have enough data points
+            if len(df) < 50:  # Minimum required for all indicators
+                self.logger.warning(f"Insufficient data points: {len(df)}")
+                return pd.DataFrame()
+            
             # Volume indicators first (since other calculations depend on it)
-            df['Volume_MA'] = ta.sma(df['volume'], length=20)
-            df['Volume_Ratio'] = df['volume'] / df['Volume_MA']
+            try:
+                df['Volume_MA'] = ta.sma(df['volume'], length=20)
+                df['Volume_Ratio'] = df['volume'] / df['Volume_MA']
+            except Exception as e:
+                self.logger.error(f"Error calculating volume indicators: {str(e)}")
+                return pd.DataFrame()
             
             # RSI with multiple timeframes
-            df['RSI'] = ta.rsi(df['close'])
-            df['RSI_MA'] = ta.sma(df['RSI'], length=14)
+            try:
+                df['RSI'] = ta.rsi(df['close'])
+                df['RSI_MA'] = ta.sma(df['RSI'], length=14)
+            except Exception as e:
+                self.logger.error(f"Error calculating RSI: {str(e)}")
+                return pd.DataFrame()
             
             # MACD with multiple settings
-            macd = ta.macd(df['close'])
-            df['MACD'] = macd['MACD_12_26_9']
-            df['MACD_Signal'] = macd['MACDs_12_26_9']
-            df['MACD_Hist'] = macd['MACDh_12_26_9']
+            try:
+                macd = ta.macd(df['close'])
+                df['MACD'] = macd['MACD_12_26_9']
+                df['MACD_Signal'] = macd['MACDs_12_26_9']
+                df['MACD_Hist'] = macd['MACDh_12_26_9']
+            except Exception as e:
+                self.logger.error(f"Error calculating MACD: {str(e)}")
+                return pd.DataFrame()
             
             # Moving Averages for different timeframes
-            df['EMA_8'] = ta.ema(df['close'], length=8)    # Short-term trend
-            df['EMA_21'] = ta.ema(df['close'], length=21)  # Medium-term trend
-            df['EMA_50'] = ta.ema(df['close'], length=50)  # Long-term trend
+            try:
+                df['EMA_8'] = ta.ema(df['close'], length=8)    # Short-term trend
+                df['EMA_21'] = ta.ema(df['close'], length=21)
+                df['EMA_50'] = ta.ema(df['close'], length=50)  # Long-term trend
+            except Exception as e:
+                self.logger.error(f"Error calculating EMAs: {str(e)}")
+                return pd.DataFrame()
             
             # Bollinger Bands
-            bollinger = ta.bbands(df['close'], length=20)
-            df['BB_Upper'] = bollinger['BBU_20_2.0']
-            df['BB_Middle'] = bollinger['BBM_20_2.0']
-            df['BB_Lower'] = bollinger['BBL_20_2.0']
+            try:
+                bollinger = ta.bbands(df['close'], length=20)
+                df['BB_Upper'] = bollinger['BBU_20_2.0']
+                df['BB_Middle'] = bollinger['BBM_20_2.0']
+                df['BB_Lower'] = bollinger['BBL_20_2.0']
+            except Exception as e:
+                self.logger.error(f"Error calculating Bollinger Bands: {str(e)}")
+                return pd.DataFrame()
             
             # Store the indicators for reference
             self.indicators = {
@@ -70,10 +106,13 @@ class TechnicalAnalysis:
             return df
             
         except Exception as e:
-            console.print(f"[bold red]Error calculating indicators: {str(e)}")
-            console.print("[yellow]Debug info:")
-            console.print(f"DataFrame columns: {df.columns.tolist()}")
-            raise
+            self.logger.error(f"Error calculating indicators: {str(e)}")
+            self.logger.debug("Debug info:")
+            if df is not None:
+                self.logger.debug(f"DataFrame columns: {df.columns.tolist()}")
+                self.logger.debug(f"DataFrame shape: {df.shape}")
+                self.logger.debug(f"DataFrame head:\n{df.head()}")
+            return pd.DataFrame()
     
     def identify_order_blocks(
         self,
@@ -313,9 +352,7 @@ class TechnicalAnalysis:
         return False
     
     def _validate_bullish_ob(self, df: pd.DataFrame, index: int, window: int) -> bool:
-        """
-        Validate bullish order block with surrounding price action
-        """
+        """Validate a bullish order block"""
         # Check if price respects the order block
         for i in range(index + 1, min(index + window, len(df))):
             if df['low'].iloc[i] < df['low'].iloc[index]:
@@ -323,9 +360,7 @@ class TechnicalAnalysis:
         return True
     
     def _validate_bearish_ob(self, df: pd.DataFrame, index: int, window: int) -> bool:
-        """
-        Validate bearish order block with surrounding price action
-        """
+        """Validate a bearish order block"""
         # Check if price respects the order block
         for i in range(index + 1, min(index + window, len(df))):
             if df['high'].iloc[i] > df['high'].iloc[index]:
@@ -333,9 +368,7 @@ class TechnicalAnalysis:
         return True
     
     def _validate_supply_zone(self, df: pd.DataFrame, index: int, window: int) -> bool:
-        """
-        Validate supply zone with surrounding price action
-        """
+        """Validate a supply zone"""
         # Check if price respects the supply zone
         for i in range(index + 1, min(index + window, len(df))):
             if df['high'].iloc[i] > df['high'].iloc[index]:
@@ -343,9 +376,7 @@ class TechnicalAnalysis:
         return True
     
     def _validate_demand_zone(self, df: pd.DataFrame, index: int, window: int) -> bool:
-        """
-        Validate demand zone with surrounding price action
-        """
+        """Validate a demand zone"""
         # Check if price respects the demand zone
         for i in range(index + 1, min(index + window, len(df))):
             if df['low'].iloc[i] < df['low'].iloc[index]:
@@ -353,87 +384,81 @@ class TechnicalAnalysis:
         return True
     
     def _calculate_ob_strength(self, df: pd.DataFrame, index: int, ob_type: str) -> float:
-        """
-        Calculate the strength of an order block
-        """
-        volume = df['volume'].iloc[index]
-        price_range = df['high'].iloc[index] - df['low'].iloc[index]
-        volume_ratio = df['Volume_Ratio'].iloc[index]
+        """Calculate the strength of an order block"""
+        # Volume strength
+        volume_strength = df['volume'].iloc[index] / df['Volume_MA'].iloc[index]
         
-        # Consider RSI for additional confirmation
-        rsi = df['RSI'].iloc[index]
-        rsi_factor = 1.0
-        if ob_type == 'bullish' and rsi < 30:
-            rsi_factor = 1.2
-        elif ob_type == 'bearish' and rsi > 70:
-            rsi_factor = 1.2
-            
-        return (volume / price_range) * volume_ratio * rsi_factor if price_range > 0 else 0
+        # Price action strength
+        if ob_type == 'bullish':
+            body_size = df['close'].iloc[index] - df['open'].iloc[index]
+            total_size = df['high'].iloc[index] - df['low'].iloc[index]
+            price_strength = body_size / total_size if total_size > 0 else 0
+        else:  # bearish
+            body_size = df['open'].iloc[index] - df['close'].iloc[index]
+            total_size = df['high'].iloc[index] - df['low'].iloc[index]
+            price_strength = body_size / total_size if total_size > 0 else 0
+        
+        # Combine strengths
+        return (volume_strength + price_strength) / 2
     
     def _calculate_zone_strength(self, df: pd.DataFrame, index: int, zone_type: str) -> float:
-        """
-        Calculate the strength of a supply/demand zone
-        """
-        volume = df['volume'].iloc[index]
-        price_range = df['high'].iloc[index] - df['low'].iloc[index]
-        volume_ratio = df['Volume_Ratio'].iloc[index]
+        """Calculate the strength of a supply/demand zone"""
+        # Volume strength
+        volume_strength = df['volume'].iloc[index] / df['Volume_MA'].iloc[index]
         
-        # Consider RSI for additional confirmation
-        rsi = df['RSI'].iloc[index]
-        rsi_factor = 1.0
-        if zone_type == 'demand' and rsi < 30:
-            rsi_factor = 1.2
-        elif zone_type == 'supply' and rsi > 70:
-            rsi_factor = 1.2
-            
-        return (volume / price_range) * volume_ratio * rsi_factor if price_range > 0 else 0
+        # Price action strength
+        if zone_type == 'supply':
+            body_size = df['open'].iloc[index] - df['close'].iloc[index]
+            total_size = df['high'].iloc[index] - df['low'].iloc[index]
+            price_strength = body_size / total_size if total_size > 0 else 0
+        else:  # demand
+            body_size = df['close'].iloc[index] - df['open'].iloc[index]
+            total_size = df['high'].iloc[index] - df['low'].iloc[index]
+            price_strength = body_size / total_size if total_size > 0 else 0
+        
+        # Combine strengths
+        return (volume_strength + price_strength) / 2
     
     def _calculate_choch_strength(self, df: pd.DataFrame, index: int, direction: str) -> float:
-        """
-        Calculate the strength of a CHoCH
-        """
-        volume = df['volume'].iloc[index]
-        price_range = df['high'].iloc[index] - df['low'].iloc[index]
-        volume_ratio = df['Volume_Ratio'].iloc[index]
+        """Calculate the strength of a Change of Character"""
+        # Volume strength
+        volume_strength = df['volume'].iloc[index] / df['Volume_MA'].iloc[index]
         
-        # Consider RSI for additional confirmation
-        rsi = df['RSI'].iloc[index]
-        rsi_factor = 1.0
-        if direction == 'bullish' and rsi > 60:
-            rsi_factor = 1.2
-        elif direction == 'bearish' and rsi < 40:
-            rsi_factor = 1.2
-            
-        return (volume / price_range) * volume_ratio * rsi_factor if price_range > 0 else 0
+        # Price action strength
+        if direction == 'bullish':
+            body_size = df['close'].iloc[index] - df['open'].iloc[index]
+            total_size = df['high'].iloc[index] - df['low'].iloc[index]
+            price_strength = body_size / total_size if total_size > 0 else 0
+        else:  # bearish
+            body_size = df['open'].iloc[index] - df['close'].iloc[index]
+            total_size = df['high'].iloc[index] - df['low'].iloc[index]
+            price_strength = body_size / total_size if total_size > 0 else 0
+        
+        # Combine strengths
+        return (volume_strength + price_strength) / 2
     
     def _calculate_pdl_strength(self, df: pd.DataFrame, index: int) -> float:
-        """
-        Calculate the strength of a PDL
-        """
-        volume = df['volume'].iloc[index]
-        price_range = df['high'].iloc[index] - df['low'].iloc[index]
-        volume_ratio = df['Volume_Ratio'].iloc[index]
+        """Calculate the strength of a Previous Day Low"""
+        # Volume strength
+        volume_strength = df['volume'].iloc[index] / df['Volume_MA'].iloc[index]
         
-        # Consider RSI for additional confirmation
-        rsi = df['RSI'].iloc[index]
-        rsi_factor = 1.0
-        if rsi < 30:
-            rsi_factor = 1.2
-            
-        return (volume / price_range) * volume_ratio * rsi_factor if price_range > 0 else 0
+        # Price action strength
+        body_size = df['close'].iloc[index] - df['open'].iloc[index]
+        total_size = df['high'].iloc[index] - df['low'].iloc[index]
+        price_strength = body_size / total_size if total_size > 0 else 0
+        
+        # Combine strengths
+        return (volume_strength + price_strength) / 2
     
     def _calculate_pdh_strength(self, df: pd.DataFrame, index: int) -> float:
-        """
-        Calculate the strength of a PDH
-        """
-        volume = df['volume'].iloc[index]
-        price_range = df['high'].iloc[index] - df['low'].iloc[index]
-        volume_ratio = df['Volume_Ratio'].iloc[index]
+        """Calculate the strength of a Previous Day High"""
+        # Volume strength
+        volume_strength = df['volume'].iloc[index] / df['Volume_MA'].iloc[index]
         
-        # Consider RSI for additional confirmation
-        rsi = df['RSI'].iloc[index]
-        rsi_factor = 1.0
-        if rsi > 70:
-            rsi_factor = 1.2
-            
-        return (volume / price_range) * volume_ratio * rsi_factor if price_range > 0 else 0 
+        # Price action strength
+        body_size = df['open'].iloc[index] - df['close'].iloc[index]
+        total_size = df['high'].iloc[index] - df['low'].iloc[index]
+        price_strength = body_size / total_size if total_size > 0 else 0
+        
+        # Combine strengths
+        return (volume_strength + price_strength) / 2 

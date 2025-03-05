@@ -1,15 +1,39 @@
 trading:
-  timeframes:
-    swing:
-      - 1d
-      - 4h
-      - 1h
-      - 15m
-      - 5m
+  modes:
     scalping:
-      - 15m
-      - 5m
-  
+      timeframes:
+        - 1m
+        - 5m
+        - 15m
+      default_timeframe: 5m
+      smc_analysis:
+        primary_timeframe: 5m
+        secondary_timeframes: [1m, 15m]
+        lookback_periods:
+          1m: 100  # 100 minutes
+          5m: 50   # 50 5-minute candles
+          15m: 30  # 30 15-minute candles
+    swing:
+      timeframes:
+        - 1h
+        - 4h
+        - 1d
+      default_timeframe: 1h
+      smc_analysis:
+        primary_timeframe: 1h
+        secondary_timeframes: [4h, 1d]
+        lookback_periods:
+          1h: 100
+          4h: 50
+          1d: 30
+  position_sizing:
+    risk_per_trade: 0.02  # 2% risk per trade
+    max_positions: 3
+    leverage: 1
+  symbols:
+    - BTC/USDT
+    - ETH/USDT
+    - SOL/USDT
   technical_indicators:
     swing:
       - RSI
@@ -21,7 +45,6 @@ trading:
       - MACD
       - SMA_20
       - EMA_9
-  
   smc_strategy:
     order_blocks: true
     supply_zones: true
@@ -30,42 +53,47 @@ trading:
     liquidity_levels: true
 
 llm:
-  default_model: "mistral"  # Default model to use
+  default_model: "local"
+  api_key: ${GEMINI_API_KEY}
+  temperature: 0.8
+  max_tokens: 1000
+  confidence_threshold: 0.2
+  top_p: 0.9
+  frequency_penalty: 0.5
+  presence_penalty: 0.5
   models:
-    mistral:
+    local:
       type: "local"
+      name: "mistral-7b-instruct-v0.1"
       model_path: "models/mistral-7b-instruct-v0.1.Q4_K_M.gguf"
-      context_length: 8192
-      max_tokens: 2048
-      temperature: 0.7
+      context_length: 2048
+      max_tokens: 1000
+      temperature: 0.8
       top_p: 0.9
-      system_prompt: |
-        You are an expert cryptocurrency trading analyst with deep knowledge of technical analysis and market psychology.
-        Your task is to analyze market data and provide trading signals with high confidence.
-        Focus on identifying strong reversal or continuation patterns across multiple timeframes.
-        Consider both technical indicators and market structure (support/resistance, order blocks, etc.).
-        Provide clear reasoning for your analysis and specific price levels for entry, stop-loss, and take-profit targets.
-    
+      system_prompt: "You are an expert cryptocurrency scalping analyst specializing in Smart Money Concepts (SMC) and technical analysis. Your goal is to identify high-probability trading opportunities in short-term price movements. Generate trading signals when you see clear entry points with good risk-reward ratios. Be proactive in identifying opportunities, but maintain strict risk management. Focus on recent price action, volume, and SMC patterns."
     gemini:
       type: "api"
-      api_key: "${GEMINI_API_KEY}"  # Will be loaded from environment
-      model_name: "gemini-2.0-flash"  # Updated to latest available model
-      max_tokens: 2048
-      temperature: 0.7
-      system_prompt: |
-        You are an expert cryptocurrency trading analyst with deep knowledge of technical analysis and market psychology.
-        Your task is to analyze market data and provide trading signals with high confidence.
-        Focus on identifying strong reversal or continuation patterns across multiple timeframes.
-        Consider both technical indicators and market structure (support/resistance, order blocks, etc.).
-        Provide clear reasoning for your analysis and specific price levels for entry, stop-loss, and take-profit targets.
-
-  confidence_threshold: 0.60
+      name: "gemini-pro"
+      api_key: ${GEMINI_API_KEY}
+      max_tokens: 1000
+      temperature: 0.8
+      system_prompt: "You are an expert cryptocurrency scalping analyst specializing in Smart Money Concepts (SMC) and technical analysis. Your goal is to identify high-probability trading opportunities in short-term price movements. Generate trading signals when you see clear entry points with good risk-reward ratios. Be proactive in identifying opportunities, but maintain strict risk management. Focus on recent price action, volume, and SMC patterns. When analyzing market conditions, consider the following: 1) Strong signals should have confidence > 0.7, 2) Moderate signals should have confidence > 0.5, 3) Weak signals should have confidence > 0.3. Generate BUY/SELL signals when you see at least 2-3 confirming factors from: - Price near key SMC levels (order blocks, liquidity levels) - Strong technical indicator alignment (RSI, MACD, EMAs) - Clear market structure (trend, support/resistance) - Good risk-reward ratio (at least 1:2) - Volume confirmation. Only use HOLD when: - No clear directional bias in indicators - Conflicting signals across timeframes - Price in a tight range with no clear breakout - Risk-reward ratio below 1:2 - No strong SMC levels nearby. Always provide detailed reasoning for your signal generation."
 
 data:
   source: "binance"
-  historical_data_days: 365
+  historical_data_days: 7  # Reduced for scalping to focus on recent data
   update_interval: 20  # seconds
-  rate_limit: true  # Enable rate limiting for API calls
+  rate_limit: true
+  min_data_points: 1000
+  binance:
+    testnet: false
+    api_key: ${BINANCE_API_KEY}
+    api_secret: ${BINANCE_API_SECRET}
+  redis:
+    host: "localhost"
+    port: 6379
+    db: 0
+    ttl: 300  # Cache TTL in seconds
 
 risk_management:
   swing:
@@ -89,4 +117,75 @@ visualization:
   show_market_status: true
   show_technical_indicators: true
   show_patterns: true
-  show_signals: true 
+  show_signals: true
+
+monitoring:
+  interval: 20  # 5 minutes between analyses
+  error_delay: 60  # 1 minute delay on error
+  max_retries: 3  # Maximum number of retries on error
+  timeout: 30  # Timeout for API calls in seconds
+  alerts:
+    pnl_threshold: 0.02  # 2% PnL threshold for alerts
+    structure_shift: true
+    reversal_pattern: true
+    liquidity_level: true
+  position_management:
+    trailing_stop: true
+    trailing_stop_distance: 0.02  # 2% distance
+    dynamic_take_profit: true
+    max_loss: 0.05  # 5% maximum loss
+    profit_target: 0.1  # 10% profit target
+
+technical:
+  indicators:
+    rsi:
+      period: 14
+      overbought: 70
+      oversold: 30
+    macd:
+      fast_period: 12
+      slow_period: 26
+      signal_period: 9
+    ema:
+      short_period: 8
+      long_period: 21
+  smc:
+    order_block:
+      min_strength: 0.4
+      max_lookback: 50  # Reduced for scalping
+    fair_value_gap:
+      min_size: 0.0001  # Even smaller gaps for scalping
+      max_lookback: 30
+    liquidity_level:
+      min_volume: 200  # Lower volume threshold for scalping
+      min_touches: 1   # Reduced touches requirement
+      max_deviation: 0.0005  # Allow slight price deviation for touches
+
+database:
+  url: postgresql://postgres:postgres@localhost:5432/hummingbird
+  host: localhost
+  port: 5432
+  name: hummingbird
+  user: postgres
+  password: postgres
+
+position:
+  min_strength: 0.6  # minimum position strength to maintain
+  max_positions: 5  # maximum number of concurrent positions
+  risk_per_trade: 0.02  # 2% risk per trade
+  max_daily_loss: 0.05  # 5% maximum daily loss
+
+market_structure:
+  order_block:
+    min_volume_multiplier: 1.2
+    min_body_size: 0.0005
+    max_lookback: 20
+  
+  fair_value_gap:
+    min_gap_size: 0.0002
+    max_fill_time: 48
+  
+  liquidity_level:
+    min_touches: 2
+    max_deviation: 0.0005
+    volume_threshold: 1.1 

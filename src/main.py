@@ -2,7 +2,7 @@ import argparse
 import logging
 import yaml
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 import pandas as pd
 from rich.console import Console
 from rich.panel import Panel
@@ -11,10 +11,17 @@ from rich.table import Table
 from rich.live import Live
 from rich.layout import Layout
 from datetime import datetime
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-from data.market_data import MarketData
-from technical.analysis import TechnicalAnalysis
-from llm.analyzer import LLMAnalyzer
+from src.data.market_data import MarketData
+from src.data.models import Position, PositionStatus, PositionType, MarketStructureData
+from src.technical.analysis import TechnicalAnalysis
+from src.technical.position_manager import PositionManager
+from src.technical.market_structure import MarketStructureAnalyzer
+from src.llm.analyzer import LLMAnalyzer
+from src.technical.smc_patterns import SMCPatternDetector
+import pandas as pd
 
 console = Console()
 logging.basicConfig(
@@ -35,8 +42,17 @@ def load_config(config_path: str = "config/config.yaml") -> Dict:
         raise
 
 class Hummingbird:
-    def __init__(self, config_path: str = "config/config.yaml"):
-        self.config = load_config(config_path)
+    def __init__(self, config_path: str):
+        self.config = self._load_config(config_path)
+        self._setup_logging()
+        
+        # Setup database connection
+        engine = create_engine(self.config['database']['url'])
+        Session = sessionmaker(bind=engine)
+        self.db = Session()
+        
+        self.position_manager = PositionManager(self.db)
+        self.market_structure = MarketStructureAnalyzer(self.db, self.config)
         self.market_data = MarketData()
         self.technical_analyzer = TechnicalAnalysis()
         self.llm_analyzer = LLMAnalyzer(
@@ -44,6 +60,23 @@ class Hummingbird:
             model_name=self.config['llm']['default_model'],
             technical_analyzer=self.technical_analyzer
         )
+        
+        # Initialize trading mode and symbol
+        self.trading_mode = "swing"
+        self.symbol = None
+    
+    def _load_config(self, config_path: str) -> Dict:
+        """Load configuration from YAML file"""
+        with open(config_path, 'r') as f:
+            return yaml.safe_load(f)
+    
+    def _setup_logging(self):
+        """Setup logging configuration"""
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logging.getLogger('Hummingbird')
     
     def _format_symbol(self, symbol: str) -> str:
         """
@@ -53,14 +86,114 @@ class Hummingbird:
             return f"{symbol}/USDT"
         return symbol
     
+    def _display_position_status(self, position):
+        """Display current position status"""
+        table = Table(title=f"Position Status - {position.symbol}")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+        
+        table.add_row("Type", position.position_type.value)
+        table.add_row("Status", position.status.value)
+        table.add_row("Entry Price", f"${position.entry_price:.2f}")
+        table.add_row("Current Price", f"${position.current_price:.2f}")
+        table.add_row("Stop Loss", f"${position.stop_loss:.2f}")
+        table.add_row("Take Profit", f"${position.take_profit:.2f}")
+        table.add_row("PnL", f"${position.pnl:.2f}")
+        
+        console.print(table)
+    
+    def _display_market_structure(self, market_structure):
+        """Display current market structure"""
+        table = Table(title="Market Structure Analysis")
+        table.add_column("Component", style="cyan")
+        table.add_column("Details", style="green")
+        
+        table.add_row("Structure Type", market_structure.structure_type.value)
+        table.add_row("Order Blocks", str(len(market_structure.order_blocks)))
+        table.add_row("Fair Value Gaps", str(len(market_structure.fair_value_gaps)))
+        table.add_row("Liquidity Levels", str(len(market_structure.liquidity_levels)))
+        
+        console.print(table)
+    
+    def _get_market_data(self, symbol: str) -> pd.DataFrame:
+        """Get latest market data for a symbol"""
+        try:
+            self.logger.info(f"Fetching market data for {symbol}")
+            # Get data for the current trading mode's default timeframe
+            timeframe = self.config['trading']['modes'][self.trading_mode]['default_timeframe']
+            days = self.config['data']['historical_data_days']
+            
+            df = self.market_data.fetch_historical_data(
+                symbol,
+                timeframe,
+                days
+            )
+            self.logger.info(f"Successfully fetched {len(df)} candles for {symbol}")
+            return df
+        except Exception as e:
+            self.logger.error(f"Error fetching market data: {str(e)}")
+            raise
+    
+    def monitor_positions(self):
+        """Monitor active positions and market structure"""
+        try:
+            self.logger.info("Starting position monitoring")
+            # Get active positions
+            active_positions = self.position_manager.get_active_positions()
+            self.logger.info(f"Found {len(active_positions)} active positions")
+            
+            for position in active_positions:
+                self.logger.info(f"Processing position {position.id} for {position.symbol}")
+                # Get latest market data
+                market_data = self._get_market_data(position.symbol)
+                
+                # Analyze market structure
+                self.logger.info("Analyzing market structure")
+                structure = self.market_structure.analyze_market_structure(
+                    market_data,
+                    position.timeframe,
+                    position.id
+                )
+                
+                # Check for exit signals
+                self.logger.info("Checking for exit signals")
+                if self._check_exit_signals(position, structure):
+                    self.position_manager.close_position(position.id)
+                    self.logger.info(f"Position {position.id} closed due to exit signal")
+                
+                # Update position status
+                self.logger.info("Updating position status")
+                self.position_manager.update_position_status(position.id, structure)
+                
+        except Exception as e:
+            self.logger.error(f"Error monitoring positions: {str(e)}")
+            self.db.rollback()
+        finally:
+            self.db.commit()
+    
+    def _check_exit_signals(self, position, structure) -> bool:
+        """Check for exit signals based on market structure"""
+        # Check structure shift
+        if self.market_structure.detect_structure_shift(structure, position.last_structure):
+            return True
+        
+        # Check position strength
+        strength = self.market_structure.validate_position_strength(
+            position.type,
+            structure
+        )
+        
+        # Exit if position strength is too low
+        if strength < self.config['position']['min_strength']:
+            return True
+        
+        return False
+    
     def analyze_market(self, symbol: str) -> Dict:
         """
-        Perform comprehensive market analysis
+        Analyze market data and generate trading signals
         """
         try:
-            # Format symbol for Binance
-            symbol = self._format_symbol(symbol)
-            
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
@@ -68,119 +201,125 @@ class Hummingbird:
                 TaskProgressColumn(),
                 console=console
             ) as progress:
-                # Fetch historical data with adjusted days based on timeframe
-                data_task = progress.add_task("[cyan]Fetching market data...", total=len(self.config['trading']['timeframes']))
-                historical_data = {}
-                for timeframe in self.config['trading']['timeframes']:
-                    # Adjust historical data days based on timeframe
-                    if timeframe == '15m':
-                        days = 1  # Last 24 hours for 15m
-                    elif timeframe == '5m':
-                        days = 0.5  # Last 12 hours for 5m
-                    elif timeframe == '3m':
-                        days = 0.25  # Last 6 hours for 3m
-                    else:
-                        days = self.config['data']['historical_data_days']
-                    
+                # Get timeframes for current trading mode
+                mode_config = self.config['trading']['modes'][self.trading_mode]
+                primary_timeframe = mode_config['smc_analysis']['primary_timeframe']
+                secondary_timeframes = mode_config['smc_analysis']['secondary_timeframes']
+                lookback_periods = mode_config['smc_analysis']['lookback_periods']
+                
+                # Fetch data for all timeframes
+                data_task = progress.add_task("[cyan]Fetching market data...", total=1 + len(secondary_timeframes))
+                market_data = {}
+                
+                # Fetch primary timeframe data
+                df = self.market_data.fetch_historical_data(
+                    symbol,
+                    primary_timeframe,
+                    self.config['data']['historical_data_days']
+                )
+                if df is not None and not df.empty:
+                    market_data[primary_timeframe] = df.tail(lookback_periods[primary_timeframe])
+                else:
+                    self.logger.warning(f"Failed to fetch data for primary timeframe {primary_timeframe}")
+                progress.advance(data_task)
+                
+                # Fetch secondary timeframe data
+                for tf in secondary_timeframes:
                     df = self.market_data.fetch_historical_data(
                         symbol,
-                        timeframe,
-                        days
+                        tf,
+                        self.config['data']['historical_data_days']
                     )
-                    # Set the index name to the timeframe
-                    df.index.name = timeframe
-                    historical_data[timeframe] = df
+                    if df is not None and not df.empty:
+                        market_data[tf] = df.tail(lookback_periods[tf])
+                    else:
+                        self.logger.warning(f"Failed to fetch data for secondary timeframe {tf}")
                     progress.advance(data_task)
                 
-                # Calculate technical indicators
-                indicators_task = progress.add_task("[yellow]Calculating technical indicators...", total=len(historical_data))
+                # Check if we have data for the primary timeframe
+                if primary_timeframe not in market_data:
+                    raise ValueError(f"No data available for primary timeframe {primary_timeframe}")
+                
+                # Calculate technical indicators for all timeframes
+                indicators_task = progress.add_task("[yellow]Calculating technical indicators...", total=len(market_data))
                 technical_indicators = {}
-                for timeframe, df in historical_data.items():
-                    # Ensure we're using recent data
-                    df = df.tail(100)  # Use last 100 candles for more recent analysis
-                    df_with_indicators = self.technical_analyzer.calculate_indicators(df)
-                    technical_indicators[timeframe] = {
-                        'RSI': df_with_indicators['RSI'].iloc[-1],
-                        'MACD': df_with_indicators['MACD'].iloc[-1],
-                        'MACD_Signal': df_with_indicators['MACD_Signal'].iloc[-1],
-                        'MACD_Hist': df_with_indicators['MACD_Hist'].iloc[-1],
-                        'EMA_8': df_with_indicators['EMA_8'].iloc[-1],
-                        'EMA_21': df_with_indicators['EMA_21'].iloc[-1]
-                    }
+                
+                for tf, df in market_data.items():
+                    try:
+                        df_with_indicators = self.technical_analyzer.calculate_indicators(df)
+                        if df_with_indicators is not None and not df_with_indicators.empty:
+                            technical_indicators[tf] = {
+                                'RSI': df_with_indicators['RSI'].iloc[-1],
+                                'MACD': df_with_indicators['MACD'].iloc[-1],
+                                'MACD_Signal': df_with_indicators['MACD_Signal'].iloc[-1],
+                                'MACD_Hist': df_with_indicators['MACD_Hist'].iloc[-1],
+                                'EMA_8': df_with_indicators['EMA_8'].iloc[-1],
+                                'EMA_21': df_with_indicators['EMA_21'].iloc[-1]
+                            }
+                        else:
+                            self.logger.warning(f"Failed to calculate indicators for timeframe {tf}")
+                    except Exception as e:
+                        self.logger.error(f"Error calculating indicators for {tf}: {str(e)}")
                     progress.advance(indicators_task)
                 
-                # Identify patterns for each timeframe
-                patterns_task = progress.add_task("[green]Identifying market patterns...", total=len(historical_data) * 2)
-                all_order_blocks = []
-                all_supply_zones = []
-                all_demand_zones = []
+                # Analyze market structure for all timeframes
+                structure_task = progress.add_task("[green]Analyzing market structure...", total=len(market_data))
+                market_structure = {}
                 
-                for timeframe, df in historical_data.items():
-                    # Use recent data for pattern identification
-                    df = df.tail(100)
-                    df_with_indicators = self.technical_analyzer.calculate_indicators(df)
-                    
-                    # Identify order blocks
-                    order_blocks = self.technical_analyzer.identify_order_blocks(
-                        df_with_indicators,
-                        timeframe=timeframe
+                for tf, df in market_data.items():
+                    try:
+                        market_structure[tf] = self.market_structure.analyze_market_structure(
+                            df,
+                            tf
+                        )
+                    except Exception as e:
+                        self.logger.error(f"Error analyzing market structure for {tf}: {str(e)}")
+                    progress.advance(structure_task)
+                
+                # Get current price directly from Binance
+                current_price = self.market_data.get_current_price(symbol)
+                if current_price is None:
+                    raise ValueError("Failed to get current price from Binance")
+                
+                # Display current market status
+                if primary_timeframe in technical_indicators:
+                    self._display_market_status(symbol, current_price, technical_indicators[primary_timeframe])
+                
+                # Display SMC patterns and market structure for all timeframes
+                for tf, structure in market_structure.items():
+                    if structure is not None:
+                        console.print(f"\n[bold yellow]SMC Analysis for {tf} Timeframe:")
+                        self._display_patterns(
+                            structure.order_blocks,
+                            structure.fair_value_gaps,
+                            structure.liquidity_levels
+                        )
+                
+                # Generate trading signal using all timeframes
+                if primary_timeframe in market_structure and market_structure[primary_timeframe] is not None:
+                    signal = self.llm_analyzer.generate_trading_signal(
+                        self.llm_analyzer.prepare_market_context(
+                            market_data,
+                            technical_indicators.get(primary_timeframe, {}),  # Use primary timeframe indicators
+                            market_structure[primary_timeframe].order_blocks,  # Use primary timeframe order blocks
+                            market_structure[primary_timeframe].fair_value_gaps,  # Use primary timeframe FVGs
+                            market_structure[primary_timeframe].liquidity_levels  # Use primary timeframe liquidity levels
+                        ),
+                        current_price,
+                        self.config['llm']['confidence_threshold']
                     )
-                    all_order_blocks.extend(order_blocks)
-                    progress.advance(patterns_task)
-                    
-                    # Identify supply/demand zones
-                    supply_zones, demand_zones = self.technical_analyzer.identify_supply_demand_zones(
-                        df_with_indicators,
-                        timeframe=timeframe
-                    )
-                    all_supply_zones.extend(supply_zones)
-                    all_demand_zones.extend(demand_zones)
-                    progress.advance(patterns_task)
+                else:
+                    raise ValueError("Failed to analyze market structure for primary timeframe")
                 
-                # Sort and limit the number of patterns
-                all_order_blocks.sort(key=lambda x: x['strength'], reverse=True)
-                all_supply_zones.sort(key=lambda x: x['strength'], reverse=True)
-                all_demand_zones.sort(key=lambda x: x['strength'], reverse=True)
+                return {
+                    'signal': signal,
+                    'market_structure': market_structure,
+                    'technical_indicators': technical_indicators,
+                    'current_price': current_price
+                }
                 
-                order_blocks = all_order_blocks[:3]
-                supply_zones = all_supply_zones[:2]
-                demand_zones = all_demand_zones[:2]
-            
-            # Get current price directly from Binance
-            current_price = self.market_data.get_current_price(symbol)
-            
-            # Display current market status
-            self._display_market_status(symbol, current_price, technical_indicators)
-            
-            # Display recent patterns
-            self._display_patterns(order_blocks, supply_zones, demand_zones)
-            
-            # Generate trading signal
-            signal = self.llm_analyzer.generate_trading_signal(
-                self.llm_analyzer.prepare_market_context(
-                    historical_data,
-                    technical_indicators,
-                    order_blocks,
-                    supply_zones,
-                    demand_zones
-                ),
-                current_price,
-                self.config['llm']['confidence_threshold']
-            )
-            
-            return {
-                'symbol': symbol,
-                'timestamp': pd.Timestamp.now(),
-                'current_price': current_price,
-                'signal': signal,
-                'technical_indicators': technical_indicators,
-                'order_blocks': order_blocks,
-                'supply_zones': supply_zones,
-                'demand_zones': demand_zones
-            }
-            
         except Exception as e:
-            console.print(f"[bold red]Error analyzing market: {str(e)}")
+            self.logger.error(f"Error analyzing market: {str(e)}")
             raise
     
     def _display_market_status(self, symbol: str, current_price: float, indicators: Dict):
@@ -188,20 +327,21 @@ class Hummingbird:
         Display current market status in a beautiful format
         """
         table = Table(title=f"Market Status - {symbol}")
-        table.add_column("Timeframe", style="cyan")
-        table.add_column("RSI", style="green")
-        table.add_column("MACD", style="magenta")
-        table.add_column("EMA 8", style="yellow")
-        table.add_column("EMA 21", style="yellow")
+        table.add_column("Indicator", style="cyan")
+        table.add_column("Value", style="green")
         
-        for timeframe, values in indicators.items():
-            table.add_row(
-                timeframe,
-                f"{values['RSI']:.2f}",
-                f"{values['MACD']:.2f}",
-                f"{values['EMA_8']:.2f}",
-                f"{values['EMA_21']:.2f}"
-            )
+        # Add each indicator to the table
+        for name, value in indicators.items():
+            if isinstance(value, (int, float)):
+                table.add_row(
+                    name,
+                    f"{float(value):.2f}"
+                )
+            else:
+                table.add_row(
+                    name,
+                    str(value)
+                )
         
         console.print(table)
         console.print(Panel(
@@ -210,164 +350,112 @@ class Hummingbird:
             border_style="blue"
         ))
     
-    def _display_patterns(self, order_blocks: List[Dict], supply_zones: List[Dict], demand_zones: List[Dict]):
+    def _display_patterns(self, order_blocks: List[Dict], fair_value_gaps: List[Dict], liquidity_levels: List[Dict]):
         """
         Display recent market patterns with SMC details
         """
         # Debug print raw pattern data
         console.print("\n[bold yellow]Raw Pattern Data:")
-        console.print(f"Order Blocks Count: {len(self.technical_analyzer.order_blocks)}")
-        console.print(f"Supply Zones Count: {len(self.technical_analyzer.supply_zones)}")
-        console.print(f"Demand Zones Count: {len(self.technical_analyzer.demand_zones)}")
-        console.print(f"Fair Value Gaps Count: {len(self.technical_analyzer.fair_value_gaps)}")
-        console.print(f"Liquidity Sweeps Count: {len(self.technical_analyzer.liquidity_sweeps)}")
+        console.print(f"Order Blocks Count: {len(order_blocks)}")
+        console.print(f"Fair Value Gaps Count: {len(fair_value_gaps)}")
+        console.print(f"Liquidity Levels Count: {len(liquidity_levels)}")
         
         # Display Order Blocks with SMC details
-        if self.technical_analyzer.order_blocks:
+        if order_blocks:
             console.print("\n[bold cyan]Recent Order Blocks (SMC):")
-            for block in sorted(self.technical_analyzer.order_blocks, key=lambda x: x['strength'], reverse=True)[:3]:
+            for block in sorted(order_blocks, key=lambda x: x.strength, reverse=True)[:3]:
                 console.print(
-                    f"Type: {block['type']}, "
-                    f"Price: {block['price']:.2f}, "
-                    f"Volume: {block['volume']:.2f}, "
-                    f"Strength: {block['strength']:.2f}, "
-                    f"Timeframe: {block['timeframe']}"
+                    f"Type: {block.block_type}, "
+                    f"Price: {block.price:.2f}, "
+                    f"Volume: {block.volume:.2f}, "
+                    f"Strength: {block.strength:.2f}"
                 )
         else:
             console.print("\n[bold yellow]No Order Blocks identified")
         
-        # Display Supply Zones with SMC details
-        if self.technical_analyzer.supply_zones:
-            console.print("\n[bold red]Supply Zones (SMC):")
-            for zone in sorted(self.technical_analyzer.supply_zones, key=lambda x: x['strength'], reverse=True)[:2]:
-                console.print(
-                    f"Price: {zone['price']:.2f}, "
-                    f"Strength: {zone['strength']:.2f}, "
-                    f"Timeframe: {zone['timeframe']}"
-                )
-        else:
-            console.print("\n[bold yellow]No Supply Zones identified")
-        
-        # Display Demand Zones with SMC details
-        if self.technical_analyzer.demand_zones:
-            console.print("\n[bold green]Demand Zones (SMC):")
-            for zone in sorted(self.technical_analyzer.demand_zones, key=lambda x: x['strength'], reverse=True)[:2]:
-                console.print(
-                    f"Price: {zone['price']:.2f}, "
-                    f"Strength: {zone['strength']:.2f}, "
-                    f"Timeframe: {zone['timeframe']}"
-                )
-        else:
-            console.print("\n[bold yellow]No Demand Zones identified")
-        
-        # Display Fair Value Gaps if available
-        if self.technical_analyzer.fair_value_gaps:
+        # Display Fair Value Gaps
+        if fair_value_gaps:
             console.print("\n[bold yellow]Fair Value Gaps (SMC):")
-            for gap in self.technical_analyzer.fair_value_gaps:
+            for gap in fair_value_gaps:
                 console.print(
-                    f"Type: {gap['type']}, "
-                    f"Price: {gap['price']:.2f}, "
-                    f"Timeframe: {gap['timeframe']}"
+                    f"Type: {gap.gap_type}, "
+                    f"Upper Price: {gap.upper_price:.2f}, "
+                    f"Lower Price: {gap.lower_price:.2f}, "
+                    f"Volume: {gap.volume:.2f}"
                 )
         else:
             console.print("\n[bold yellow]No Fair Value Gaps identified")
         
-        # Display Liquidity Sweeps if available
-        if self.technical_analyzer.liquidity_sweeps:
-            console.print("\n[bold magenta]Liquidity Sweeps (SMC):")
-            for sweep in self.technical_analyzer.liquidity_sweeps:
+        # Display Liquidity Levels
+        if liquidity_levels:
+            console.print("\n[bold magenta]Liquidity Levels (SMC):")
+            for level in liquidity_levels:
                 console.print(
-                    f"Type: {sweep['type']}, "
-                    f"Price: {sweep['price']:.2f}, "
-                    f"Timeframe: {sweep['timeframe']}"
+                    f"Type: {level.level_type}, "
+                    f"Price: {level.price:.2f}, "
+                    f"Volume: {level.volume:.2f}, "
+                    f"Strength: {level.strength:.2f}"
                 )
         else:
-            console.print("\n[bold yellow]No Liquidity Sweeps identified")
+            console.print("\n[bold yellow]No Liquidity Levels identified")
         
         console.print()  # Add a blank line for better readability
     
-    def run(self, symbol: str):
-        """
-        Run the trading system continuously
-        """
-        # Format symbol for display
-        display_symbol = self._format_symbol(symbol)
-        
-        console.print(Panel(
-            f"Starting Hummingbird Trading System\nSymbol: {display_symbol}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            title="System Status",
-            border_style="green"
-        ))
-        
-        while True:
-            try:
-                analysis = self.analyze_market(symbol)
-                
-                # Wait for next update interval
-                with console.status(f"[bold blue]Waiting {self.config['data']['update_interval']} seconds until next analysis..."):
-                    time.sleep(self.config['data']['update_interval'])
-                
-            except KeyboardInterrupt:
-                console.print("\n[bold yellow]Stopping Hummingbird trading system")
-                break
-            except Exception as e:
-                console.print(f"[bold red]Error in main loop: {str(e)}")
-                time.sleep(60)  # Wait a minute before retrying
+    def run(self):
+        """Main loop for the trading system"""
+        try:
+            self.logger.info(f"Starting Hummingbird trading system in {self.trading_mode} mode for {self.symbol}")
+            
+            # Get the monitoring interval from config
+            interval = self.config['monitoring']['interval']
+            self.logger.info(f"Monitoring interval: {interval} seconds")
+            
+            while True:
+                try:
+                    # Monitor active positions
+                    self.monitor_positions()
+                    
+                    # Analyze market for new opportunities
+                    analysis_result = self.analyze_market(self.symbol)
+                    
+                    # Log the analysis result
+                    if analysis_result and 'signal' in analysis_result:
+                        signal_data = analysis_result['signal']
+                        if isinstance(signal_data, dict) and 'confidence' in signal_data:
+                            self.logger.info(f"Trading signal: {signal_data['signal']} with confidence {signal_data['confidence']:.2%}")
+                    
+                    # Sleep for the configured interval
+                    self.logger.info(f"Waiting {interval} seconds before next analysis...")
+                    time.sleep(interval)
+                    
+                except Exception as e:
+                    self.logger.error(f"Error in main loop: {str(e)}")
+                    # Use a shorter delay on error
+                    error_delay = self.config['monitoring'].get('error_delay', 5)
+                    self.logger.info(f"Waiting {error_delay} seconds before retrying...")
+                    time.sleep(error_delay)
+                    
+        except KeyboardInterrupt:
+            self.logger.info("Shutting down Hummingbird trading system")
+        finally:
+            self.db.close()
 
 def main():
-    parser = argparse.ArgumentParser(description='AI-Powered Cryptocurrency Trading System')
-    parser.add_argument('--symbol', type=str, required=True, help='Trading symbol (e.g., BTC or BTC/USDT)')
-    parser.add_argument('--model', type=str, default='mistral', help='LLM model to use (mistral or gemini)')
-    parser.add_argument('--strategy', type=str, default='swing', choices=['swing', 'scalping'], 
-                      help='Trading strategy: swing (long-term) or scalping (short-term)')
+    """Main entry point"""
+    parser = argparse.ArgumentParser(description="Hummingbird Trading System")
+    parser.add_argument("--symbol", type=str, default="BTC/USDT", help="Trading symbol")
+    parser.add_argument("--model", type=str, default="local", help="LLM model to use")
+    parser.add_argument("--mode", type=str, default="swing", choices=["swing", "scalping"], help="Trading mode")
     args = parser.parse_args()
-
+    
     try:
-        # Load configuration
-        config = load_config()
-        
-        # Override default model if specified
-        if args.model:
-            if args.model not in config['llm']['models']:
-                raise ValueError(f"Invalid model: {args.model}. Available models: {', '.join(config['llm']['models'].keys())}")
-            config['llm']['default_model'] = args.model
-        
-        # Apply strategy-specific settings
-        strategy = args.strategy
-        config['trading']['timeframes'] = config['trading']['timeframes'][strategy]
-        config['trading']['technical_indicators'] = config['trading']['technical_indicators'][strategy]
-        config['risk_management'] = config['risk_management'][strategy]
-        
-        # Adjust update interval based on strategy
-        config['data']['update_interval'] = 10 if strategy == 'scalping' else 20
-        
-        # Initialize components
-        market_data = MarketData()
-        technical_analyzer = TechnicalAnalysis()
-        llm_analyzer = LLMAnalyzer(
-            config['llm'],
-            config['llm']['default_model'],
-            technical_analyzer=technical_analyzer
-        )
-        
-        # Create and run trading system
-        hummingbird = Hummingbird()
-        hummingbird.config = config  # Update config with strategy-specific settings
-        hummingbird.technical_analyzer = technical_analyzer  # Ensure we use the same instance
-        hummingbird.llm_analyzer = llm_analyzer  # Ensure we use the same instance
-        
-        # Format symbol if needed
-        symbol = args.symbol.upper()
-        if '/' not in symbol:
-            symbol = f"{symbol}/USDT"
-            
-        # Run the system
-        hummingbird.run(symbol)
-        
+        hummingbird = Hummingbird("config/config.yaml")
+        hummingbird.trading_mode = args.mode
+        hummingbird.symbol = args.symbol
+        hummingbird.run()
     except Exception as e:
-        console.print(f"[bold red]Error in main loop: {str(e)}")
+        console.print(f"[bold red]Error in main: {str(e)}")
         raise
 
 if __name__ == "__main__":
-    print("Starting Hummingbird Trading System")
     main()
