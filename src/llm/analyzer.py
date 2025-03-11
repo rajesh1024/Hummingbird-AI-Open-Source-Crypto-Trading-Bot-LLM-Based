@@ -58,16 +58,27 @@ class LLMAnalyzer:
                 # Load Gemini API model
                 load_dotenv()  # Load environment variables
                 api_key = os.getenv('GEMINI_API_KEY')
+                console.print("[bold cyan]Debug: Checking Gemini API key...[/bold cyan]")
                 if not api_key:
+                    console.print("[bold red]Error: GEMINI_API_KEY not found in environment variables[/bold red]")
                     raise ValueError("Gemini API key not found in .env file")
+                else:
+                    console.print("[bold green]✓ Found Gemini API key[/bold green]")
                 
-                return GeminiModel(
-                    api_key=api_key,
-                    model_name=model_settings['model_name'],
-                    max_tokens=model_settings['max_tokens'],
-                    temperature=model_settings['temperature'],
-                    system_prompt=model_settings['system_prompt']
-                )
+                try:
+                    console.print("[bold cyan]Debug: Initializing Gemini model...[/bold cyan]")
+                    model = GeminiModel(
+                        api_key=api_key,
+                        model_name=model_settings['name'],
+                        max_tokens=model_settings['max_tokens'],
+                        temperature=model_settings['temperature'],
+                        system_prompt=model_settings['system_prompt']
+                    )
+                    console.print("[bold green]✓ Successfully initialized Gemini model[/bold green]")
+                    return model
+                except Exception as e:
+                    console.print(f"[bold red]Error initializing Gemini model: {str(e)}[/bold red]")
+                    raise
             
             else:
                 raise ValueError(f"Unsupported model type: {model_settings['type']}")
@@ -232,144 +243,55 @@ class LLMAnalyzer:
         
         return "\n".join(context)
     
-    def generate_trading_signal(
+    def generate_signal(
         self,
         market_context: str,
-        current_price: float,
-        confidence_threshold: Optional[float] = None  # Make it optional
-    ) -> Dict[str, Any]:
-        """Generate trading signal using LLM"""
+        confidence_threshold: Optional[float] = None
+    ) -> Dict:
+        """Generate a trading signal based on market data"""
         try:
-            # Use provided threshold or default to config value
-            threshold = confidence_threshold if confidence_threshold is not None else self.confidence_threshold
-            self.logger.info(f"Generating trading signal with confidence threshold: {threshold}")
+            # Skip confidence threshold check
+            threshold = 0.0  # Always allow signals through
             
-            # Prepare the prompt with current price
-            prompt = f"""
-            Current Price: ${current_price:.2f}
+            # Add debug logging
+            console.print("[bold cyan]Debug: Preparing to call Gemini model[/bold cyan]")
+            console.print(f"[bold cyan]Debug: Market Context Length: {len(market_context)}[/bold cyan]")
+            console.print("[bold cyan]Debug: First 500 chars of context:[/bold cyan]\n" + market_context[:500])
             
-            {market_context}
+            # Get response from model using the prepared market context
+            console.print("[bold cyan]Debug: Calling Gemini model generate_response[/bold cyan]")
+            response = self.model.generate_response(market_context)
+            console.print(f"[bold cyan]Debug: Got response from Gemini: {response}[/bold cyan]")
             
-            Based on the above analysis, provide a trading signal with the following format:
-            {{
-                "signal": "BUY/SELL/HOLD",
-                "confidence": float between 0 and 1,
-                "reasoning": "detailed explanation",
-                "entry_price": float,
-                "stop_loss": float,
-                "take_profit": float
-            }}
+            # Validate response
+            if not response or not isinstance(response, dict):
+                self.logger.error("Invalid response from model")
+                return self._get_default_signal()
             
-            Important rules for signal generation:
-            1. Generate BUY signals when:
-               - Price is near a bullish order block or support level
-               - RSI is oversold or showing bullish momentum
-               - MACD histogram is positive
-               - Price is above both EMAs
-               - Risk:reward ratio is at least 1:2
+            # Validate required fields
+            required_fields = ["signal", "confidence", "reasoning", "entry_price", "stop_loss", "take_profit"]
+            if not all(field in response for field in required_fields):
+                self.logger.error(f"Missing required fields in response: {response}")
+                return self._get_default_signal()
             
-            2. Generate SELL signals when:
-               - Price is near a bearish order block or resistance level
-               - RSI is overbought or showing bearish momentum
-               - MACD histogram is negative
-               - Price is below both EMAs
-               - Risk:reward ratio is at least 1:2
+            # No need to validate confidence - let it pass through
+            return response
             
-            3. Only use HOLD when:
-               - No clear directional bias
-               - Conflicting signals across timeframes
-               - Price in a tight range with no clear breakout
-               - Risk:reward ratio below 1:2
-            
-            For all signals:
-            - Stop loss must be below entry price for BUY
-            - Stop loss must be above entry price for SELL
-            - Take profit must be above entry price for BUY
-            - Take profit must be below entry price for SELL
-            - Set entry_price, stop_loss, and take_profit to current_price for HOLD
-            """
-            
-            # Generate response with timeout
-            try:
-                self.logger.info("Generating response from model...")
-                response = self.model.generate_response(prompt)
-                self.logger.info(f"Raw response from model: {response}")
-                
-                # Validate response format
-                if not isinstance(response, dict):
-                    self.logger.error(f"Response is not a dictionary: {type(response)}")
-                    raise ValueError(f"Response is not a dictionary: {type(response)}")
-                
-                required_fields = ["signal", "confidence", "reasoning", "entry_price", "stop_loss", "take_profit"]
-                missing_fields = [field for field in required_fields if field not in response]
-                if missing_fields:
-                    self.logger.error(f"Missing required fields: {missing_fields}")
-                    raise ValueError(f"Missing required fields: {missing_fields}")
-                
-                # Validate signal type
-                if response["signal"] not in ["BUY", "SELL", "HOLD"]:
-                    self.logger.error(f"Invalid signal type: {response['signal']}")
-                    raise ValueError(f"Invalid signal type: {response['signal']}")
-                
-                # Validate confidence
-                try:
-                    self.logger.info(f"Processing confidence value: {response['confidence']} (type: {type(response['confidence'])})")
-                    if isinstance(response["confidence"], str):
-                        response["confidence"] = float(response["confidence"])
-                    elif not isinstance(response["confidence"], (int, float)):
-                        raise ValueError(f"Invalid confidence type: {type(response['confidence'])}")
-                    
-                    if not 0 <= response["confidence"] <= 1:
-                        raise ValueError(f"Confidence out of range: {response['confidence']}")
-                except (ValueError, TypeError) as e:
-                    self.logger.error(f"Error processing confidence value: {str(e)}")
-                    response["confidence"] = 0.5
-                
-                # Validate price levels
-                for price_field in ["entry_price", "stop_loss", "take_profit"]:
-                    try:
-                        self.logger.info(f"Processing {price_field}: {response[price_field]} (type: {type(response[price_field])})")
-                        if isinstance(response[price_field], str):
-                            response[price_field] = float(response[price_field])
-                        elif not isinstance(response[price_field], (int, float)):
-                            raise ValueError(f"Invalid {price_field} type: {type(response[price_field])}")
-                    except (ValueError, TypeError) as e:
-                        self.logger.error(f"Error processing {price_field}: {str(e)}")
-                        response[price_field] = current_price
-                
-                # Check if confidence meets threshold
-                if response["confidence"] < threshold:
-                    self.logger.info(f"Signal confidence ({response['confidence']:.2%}) below threshold ({threshold:.2%}). Maintaining original signal.")
-                    original_confidence = response["confidence"]  # Store original confidence
-                    original_signal = response["signal"]  # Store original signal
-                    response["reasoning"] = f"Signal confidence ({original_confidence:.2%}) below threshold ({threshold:.2%}). Original signal: {original_signal}"
-                
-                # Display the signal
-                self._display_signal(response)
-                
-                return response
-                
-            except Exception as e:
-                self.logger.error(f"Error generating response: {str(e)}")
-                return {
-                    "signal": "HOLD",
-                    "confidence": 0.5,
-                    "reasoning": f"Error generating signal: {str(e)}",
-                    "entry_price": current_price,
-                    "stop_loss": current_price,
-                    "take_profit": current_price
-                }
-                
         except Exception as e:
-            self.logger.error(f"Error in generate_trading_signal: {str(e)}")
-            return {
-                "signal": "HOLD",
-                "confidence": 0.5,
-                "reasoning": f"Error in signal generation: {str(e)}",
-                "entry_price": current_price,
-                "stop_loss": current_price,
-                "take_profit": current_price
-            }
+            self.logger.error(f"Error generating signal: {str(e)}")
+            console.print(f"[bold red]Debug: Exception in generate_signal: {str(e)}[/bold red]")
+            return self._get_default_signal()
+    
+    def _get_default_signal(self) -> Dict:
+        """Return a default signal in case of errors"""
+        return {
+            "signal": "HOLD",
+            "confidence": 0.0,  # Changed from 0.5 to 0.0
+            "reasoning": "Error generating signal",
+            "entry_price": 0,
+            "stop_loss": 0,
+            "take_profit": 0
+        }
     
     def _parse_llm_response(self, response: str) -> Dict:
         """

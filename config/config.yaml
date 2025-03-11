@@ -61,7 +61,7 @@ llm:
   api_key: ${GEMINI_API_KEY}
   temperature: 0.8
   max_tokens: 1000
-  confidence_threshold: 0.2
+  confidence_threshold: 0.0
   top_p: 0.9
   frequency_penalty: 0.5
   presence_penalty: 0.5
@@ -77,7 +77,7 @@ llm:
       system_prompt: "You are an expert cryptocurrency scalping analyst specializing in Smart Money Concepts (SMC) and technical analysis. Your goal is to identify high-probability trading opportunities in short-term price movements. Generate trading signals when you see clear entry points with good risk-reward ratios. Be proactive in identifying opportunities, but maintain strict risk management. Focus on recent price action, volume, and SMC patterns."
     gemini:
       type: "api"
-      name: "gemini-pro"
+      name: "gemini-2.0-flash"
       api_key: ${GEMINI_API_KEY}
       max_tokens: 1000
       temperature: 0.8
@@ -152,7 +152,7 @@ Always provide detailed reasoning for your signal generation, including:
 data:
   source: "binance"
   historical_data_days: 7  # Reduced for scalping to focus on recent data
-  update_interval: 20  # seconds
+  update_interval: 10  # Changed from 20 to 60 seconds
   rate_limit: true
   min_data_points: 1000
   binance:
@@ -185,7 +185,7 @@ visualization:
   show_signals: true
 
 monitoring:
-  interval: 20  # 5 minutes between analyses
+  interval: 10  # Changed from 60 to 10 seconds between analyses
   error_delay: 60  # 1 minute delay on error
   max_retries: 3  # Maximum number of retries on error
   timeout: 30  # Timeout for API calls in seconds

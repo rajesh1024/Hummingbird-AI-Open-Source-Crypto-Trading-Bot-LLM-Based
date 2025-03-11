@@ -16,6 +16,7 @@ class GeminiModel:
         temperature: float = 0.7,
         system_prompt: str = None
     ):
+        console.print("[bold cyan]Debug: Initializing Gemini model[/bold cyan]")
         self.api_key = api_key
         self.model_name = model_name
         self.max_tokens = max_tokens
@@ -23,125 +24,116 @@ class GeminiModel:
         self.system_prompt = system_prompt
         
         # Configure the Gemini API
+        console.print("[bold cyan]Debug: Configuring Gemini API[/bold cyan]")
         genai.configure(api_key=self.api_key)
         
         try:
             # Test the connection
+            console.print("[bold cyan]Debug: Testing Gemini connection[/bold cyan]")
             self.model = genai.GenerativeModel(self.model_name)
             console.print("[green]✓ Successfully connected to Gemini API[/green]")
         except Exception as e:
             console.print(f"[red]✗ Failed to connect to Gemini API: {str(e)}[/red]")
             raise
 
-    def generate_response(self, prompt: str) -> Dict[str, Any]:
-        """Generate a response from the Gemini model."""
+    def generate_response(self, market_context: str) -> Dict:
+        """Generate a response from the Gemini model"""
         try:
-            # Add explicit JSON format instructions to the prompt
-            json_format_instructions = """
-            You MUST respond with a valid JSON object containing ALL of the following fields:
-            {
-                "signal": "BUY",  // Must be exactly "BUY", "SELL", or "HOLD"
-                "confidence": 0.85,  // Must be a number between 0 and 1
-                "reasoning": "Detailed explanation of your analysis",
-                "entry_price": 87768.61,  // Must be a number
-                "stop_loss": 85000.00,  // Must be a number
-                "take_profit": 90000.00  // Must be a number
-            }
+            console.print("[bold cyan]Debug: Starting generate_response in Gemini model[/bold cyan]")
             
-            Important:
-            1. The response must be ONLY the JSON object, no other text
-            2. All fields are required
-            3. Numbers must be actual numbers, not strings
-            4. The signal must be exactly "BUY", "SELL", or "HOLD"
-            5. Confidence must be a number between 0 and 1
+            # Format the prompt more neutrally
+            prompt = f"""
+            Market Analysis Request:
+            
+            Please analyze the following market data and provide a trading recommendation.
+            Follow the analysis guidelines and provide your response in JSON format.
+            
+            Guidelines:
+            - Analyze multiple timeframes
+            - Consider technical indicators
+            - Evaluate market structure
+            - Assess risk/reward ratio
+            - Provide clear entry/exit points
+            
+            {market_context}
+            
+            Respond with a JSON object containing:
+            {{
+                "signal": "BUY/SELL/HOLD",
+                "confidence": 0.0-1.0,
+                "reasoning": "explanation",
+                "entry_price": number,
+                "stop_loss": number,
+                "take_profit": number
+            }}
             """
             
-            # Combine system prompt, format instructions, and user prompt
-            full_prompt = f"{self.system_prompt}\n\n{json_format_instructions}\n\n{prompt}" if self.system_prompt else f"{json_format_instructions}\n\n{prompt}"
+            console.print(f"[bold cyan]Debug: Combined prompt length: {len(prompt)}[/bold cyan]")
+            console.print("[bold cyan]Debug: Full prompt being sent to Gemini:[/bold cyan]\n" + prompt)
             
-            # Generate response with timeout
+            # Call the Gemini API
+            console.print("[bold cyan]Debug: Calling Gemini API[/bold cyan]")
+            console.print(f"[bold cyan]Debug: About to make API call with prompt length: {len(prompt)}[/bold cyan]")
+            
             try:
-                # Set a timeout of 30 seconds for the API call
-                response = self.model.generate_content(
-                    full_prompt,
-                    generation_config={
-                        "max_output_tokens": self.max_tokens,
-                        "temperature": self.temperature,
-                    },
-                    safety_settings={
-                        "HARASSMENT": "block_none",
-                        "HATE_SPEECH": "block_none",
-                        "SEXUALLY_EXPLICIT": "block_none",
-                        "DANGEROUS_CONTENT": "block_none",
-                    }
-                )
-                
-                # Get the response text
-                response_text = response.text
-                console.print(f"[bold yellow]Raw response from Gemini:[/bold yellow]\n{response_text}")
-                
-                # Clean the response text to ensure valid JSON
-                response_text = response_text.strip()
-                if response_text.startswith('```json'):
-                    response_text = response_text[7:]
-                if response_text.endswith('```'):
-                    response_text = response_text[:-3]
-                
-                # Remove any control characters and normalize whitespace
-                response_text = ''.join(char for char in response_text if char.isprintable() or char in '\n\r\t')
-                response_text = response_text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-                
-                # Parse the cleaned JSON
-                try:
-                    parsed_response = json.loads(response_text)
-                    console.print(f"[bold green]Parsed JSON response:[/bold green]\n{json.dumps(parsed_response, indent=2)}")
-                except json.JSONDecodeError as e:
-                    console.print(f"[bold red]Error parsing JSON: {str(e)}")
-                    raise
-                
-                # Ensure the response has the required fields
-                if not isinstance(parsed_response, dict):
-                    raise ValueError("Response must be a JSON object")
-                
-                required_fields = ['signal', 'confidence', 'reasoning', 'entry_price', 'stop_loss', 'take_profit']
-                missing_fields = [field for field in required_fields if field not in parsed_response]
-                
-                if missing_fields:
-                    raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
-                
-                # Validate field types
-                if not isinstance(parsed_response['signal'], str) or parsed_response['signal'] not in ['BUY', 'SELL', 'HOLD']:
-                    raise ValueError("Signal must be one of: BUY, SELL, HOLD")
-                
-                # Ensure confidence is a number
-                try:
-                    parsed_response['confidence'] = float(parsed_response['confidence'])
-                    if not 0 <= parsed_response['confidence'] <= 1:
-                        raise ValueError("Confidence must be between 0 and 1")
-                except (ValueError, TypeError):
-                    raise ValueError("Confidence must be a valid number between 0 and 1")
-                
-                # Ensure price fields are numbers
-                for price_field in ['entry_price', 'stop_loss', 'take_profit']:
-                    try:
-                        parsed_response[price_field] = float(parsed_response[price_field])
-                    except (ValueError, TypeError):
-                        raise ValueError(f"{price_field} must be a valid number")
-                
-                return parsed_response
-                
+                response = self.model.generate_content(prompt)
+                if response and response.text:
+                    # Parse the response text as JSON
+                    response_text = response.text.strip()
+                    console.print(f"[bold green]Raw response from Gemini:[/bold green]\n{response_text}")
+                    
+                    # Extract JSON from response if needed
+                    if '{' in response_text:
+                        json_str = response_text[response_text.find('{'):response_text.rfind('}')+1]
+                        return json.loads(json_str)
+                    else:
+                        console.print("[bold red]No JSON found in response[/bold red]")
+                        return self._get_default_response()
+                else:
+                    console.print("[bold red]Empty response from Gemini[/bold red]")
+                    return self._get_default_response()
+                    
             except Exception as e:
-                console.print(f"[bold red]Error generating response: {str(e)}")
-                # Return a neutral response if there's an error
-                return {
-                    "signal": "HOLD",
-                    "confidence": 0.5,
-                    "reasoning": "Error generating response",
-                    "entry_price": 0.0,
-                    "stop_loss": 0.0,
-                    "take_profit": 0.0
-                }
+                console.print(f"[bold red]Error during Gemini API call: {str(e)}[/bold red]")
+                console.print("[yellow]API call failed, returning default response[/yellow]")
+                return self._get_default_response()
                 
         except Exception as e:
-            console.print(f"[bold red]Error in generate_response: {str(e)}")
-            raise 
+            console.print(f"[bold red]Error in generate_response: {str(e)}[/bold red]")
+            return self._get_default_response()
+
+    def _get_default_response(self) -> Dict:
+        """Return a default response in case of errors"""
+        return {
+            "signal": "HOLD",
+            "confidence": 0.0,
+            "reasoning": "Error generating signal",
+            "entry_price": 0,
+            "stop_loss": 0,
+            "take_profit": 0
+        }
+
+    def _validate_response(self, response: Dict) -> Dict:
+        """Validate the response from the model"""
+        try:
+            # Basic structure validation
+            required_fields = ['signal', 'confidence', 'reasoning', 'entry_price', 'stop_loss', 'take_profit']
+            if not all(field in response for field in required_fields):
+                raise ValueError(f"Missing required fields: {[f for f in required_fields if f not in response]}")
+            
+            # Signal validation
+            if response['signal'] not in ['BUY', 'SELL', 'HOLD']:
+                raise ValueError(f"Invalid signal: {response['signal']}")
+            
+            # Let confidence pass through without validation
+            
+            # Price validations
+            for field in ['entry_price', 'stop_loss', 'take_profit']:
+                if not isinstance(response[field], (int, float)):
+                    response[field] = float(response[field])
+            
+            return response
+            
+        except Exception as e:
+            self.logger.error(f"Error validating response: {str(e)}")
+            return self._get_default_response() 

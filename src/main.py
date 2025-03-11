@@ -320,7 +320,7 @@ class Hummingbird:
                 
                 # Generate trading signal using all timeframes
                 if primary_timeframe in market_structure and market_structure[primary_timeframe] is not None:
-                    signal = self.llm_analyzer.generate_trading_signal(
+                    signal = self.llm_analyzer.generate_signal(
                         self.llm_analyzer.prepare_market_context(
                             market_data,
                             technical_indicators.get(primary_timeframe, {}),  # Use primary timeframe indicators
@@ -328,7 +328,6 @@ class Hummingbird:
                             market_structure[primary_timeframe].fair_value_gaps,  # Use primary timeframe FVGs
                             market_structure[primary_timeframe].liquidity_levels  # Use primary timeframe liquidity levels
                         ),
-                        current_price,
                         self.config['llm']['confidence_threshold']
                     )
                 else:
@@ -514,6 +513,15 @@ def main():
         hummingbird = Hummingbird("config/config.yaml")
         hummingbird.trading_mode = args.mode
         hummingbird.symbol = args.symbol
+        
+        # Update the LLM analyzer with the specified model
+        console.print(f"[bold cyan]Debug: Setting up {args.model} model[/bold cyan]")
+        hummingbird.llm_analyzer = LLMAnalyzer(
+            model_config=hummingbird.config['llm'],
+            model_name=args.model,  # Use the model specified in command line args
+            technical_analyzer=hummingbird.technical_analyzer
+        )
+        
         hummingbird.run()
     except Exception as e:
         console.print(f"[bold red]Error in main: {str(e)}")

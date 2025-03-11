@@ -237,81 +237,75 @@ class TechnicalAnalysis:
         
         # Adjust window size based on timeframe
         if timeframe == '15m':
-            window = 15  # Increased from 10
+            window = 15
         elif timeframe == '5m':
-            window = 20  # Increased from 15
+            window = 10  # Reduced from 20 for faster scalping signals
         elif timeframe == '3m':
-            window = 25  # Increased from 20
+            window = 15
         elif timeframe == '1h':
-            window = 12  # Increased from 8
+            window = 12
         elif timeframe == '4h':
-            window = 10  # Increased from 6
+            window = 10
         
         order_blocks = []
         
         # Ensure we have enough data
-        if len(df) < window * 2:
-            self.logger.debug(f"Insufficient data for order blocks in {timeframe}: {len(df)} < {window * 2}")
+        if len(df) < window * 1.5:  # Reduced from window * 2
+            self.logger.debug(f"Insufficient data for order blocks in {timeframe}: {len(df)} < {window * 1.5}")
             return order_blocks
         
         self.logger.debug(f"Analyzing order blocks for {timeframe} with window size {window}")
         
         for i in range(window, len(df) - window):
-            # Check for significant volume (more lenient threshold)
-            volume_threshold = df['Volume_MA'].iloc[i] * (1.2 if timeframe in ['15m', '5m'] else 1.1)
+            # Check for significant volume (even more lenient threshold for 5m)
+            volume_threshold = df['Volume_MA'].iloc[i] * (0.8 if timeframe == '5m' else 1.2)
             
-            # Bullish Order Block (ICT principles)
+            # Bullish Order Block (ICT principles with more lenient conditions for 5m)
             if (df['close'].iloc[i] > df['open'].iloc[i] and  # Bullish candle
-                df['volume'].iloc[i] > volume_threshold * 0.8 and    # Reduced volume threshold for scalping
-                df['low'].iloc[i] < df['low'].iloc[i-1] and    # Lower low
-                df['close'].iloc[i] > df['EMA_21'].iloc[i] and # Price above EMA21
-                df['RSI'].iloc[i] < 50):  # More lenient RSI condition for scalping
+                df['volume'].iloc[i] > volume_threshold * (0.6 if timeframe == '5m' else 0.8) and    # Even lower volume threshold for 5m
+                df['close'].iloc[i] > df['EMA_21'].iloc[i] * 0.998 and # Slightly more lenient EMA condition for 5m
+                df['RSI'].iloc[i] < 60):  # Even more lenient RSI condition for scalping
                 
-                # Log potential bullish order block
-                self.logger.debug(f"Found potential bullish order block at {df.index[i]} in {timeframe}")
-                
-                # Validate with surrounding price action (reduced validation period for scalping)
-                if self._validate_bullish_ob(df, i, min(window, 5)):
+                # Validate with very short window for 5m
+                validation_window = 2 if timeframe == '5m' else min(window, 5)
+                if self._validate_bullish_ob(df, i, validation_window):
                     ob = {
                         'type': 'bullish',
                         'timestamp': df.index[i],
                         'price': df['close'].iloc[i],
                         'volume': df['volume'].iloc[i],
-                        'strength': self._calculate_ob_strength(df, i, 'bullish'),
+                        'strength': self._calculate_ob_strength(df, i, 'bullish') * (1.2 if timeframe == '5m' else 1.0),  # Boost 5m strength
                         'timeframe': timeframe
                     }
                     order_blocks.append(ob)
                     self.order_blocks.append(ob)
                     self.logger.info(f"Confirmed bullish order block at {df.index[i]} in {timeframe}")
             
-            # Bearish Order Block (ICT principles)
+            # Bearish Order Block (ICT principles with more lenient conditions for 5m)
             if (df['close'].iloc[i] < df['open'].iloc[i] and  # Bearish candle
-                df['volume'].iloc[i] > volume_threshold * 0.8 and    # Reduced volume threshold for scalping
-                df['high'].iloc[i] > df['high'].iloc[i-1] and  # Higher high
-                df['close'].iloc[i] < df['EMA_21'].iloc[i] and # Price below EMA21
-                df['RSI'].iloc[i] > 50):  # More lenient RSI condition for scalping
+                df['volume'].iloc[i] > volume_threshold * (0.6 if timeframe == '5m' else 0.8) and    # Even lower volume threshold for 5m
+                df['close'].iloc[i] < df['EMA_21'].iloc[i] * 1.002 and # Slightly more lenient EMA condition for 5m
+                df['RSI'].iloc[i] > 40):  # Even more lenient RSI condition for scalping
                 
-                # Log potential bearish order block
-                self.logger.debug(f"Found potential bearish order block at {df.index[i]} in {timeframe}")
-                
-                # Validate with surrounding price action (reduced validation period for scalping)
-                if self._validate_bearish_ob(df, i, min(window, 5)):
+                # Validate with very short window for 5m
+                validation_window = 2 if timeframe == '5m' else min(window, 5)
+                if self._validate_bearish_ob(df, i, validation_window):
                     ob = {
                         'type': 'bearish',
                         'timestamp': df.index[i],
                         'price': df['close'].iloc[i],
                         'volume': df['volume'].iloc[i],
-                        'strength': self._calculate_ob_strength(df, i, 'bearish'),
+                        'strength': self._calculate_ob_strength(df, i, 'bearish') * (1.2 if timeframe == '5m' else 1.0),  # Boost 5m strength
                         'timeframe': timeframe
                     }
                     order_blocks.append(ob)
                     self.order_blocks.append(ob)
                     self.logger.info(f"Confirmed bearish order block at {df.index[i]} in {timeframe}")
         
-        # Sort by strength and return only the strongest blocks
+        # Sort by strength and return more blocks for 5m
         order_blocks.sort(key=lambda x: x['strength'], reverse=True)
-        self.logger.info(f"Found {len(order_blocks)} order blocks for {timeframe}")
-        return order_blocks[:3]  # Return only top 3 strongest blocks for scalping
+        max_blocks = 5 if timeframe == '5m' else 3  # Return more blocks for 5m timeframe
+        return order_blocks[:max_blocks]
     
     def identify_supply_demand_zones(
         self,
@@ -331,9 +325,9 @@ class TechnicalAnalysis:
         if timeframe == '15m':
             window = 10
         elif timeframe == '5m':
-            window = 15
+            window = 8  # Reduced for faster scalping signals
         elif timeframe == '3m':
-            window = 20
+            window = 12
         elif timeframe == '1h':
             window = 8
         elif timeframe == '4h':
@@ -344,19 +338,24 @@ class TechnicalAnalysis:
         
         self.logger.debug(f"Analyzing supply/demand zones for {timeframe} with window size {window}")
         
-        # Identify CHoCH (Change of Character)
+        # Identify CHoCH (Change of Character) with more lenient conditions for 5m
         for i in range(window, len(df) - window):
             # Bullish CHoCH
             if (df['high'].iloc[i] > df['high'].iloc[i-1] and
-                df['high'].iloc[i] > df['high'].iloc[i-2] and
+                (timeframe != '5m' or df['high'].iloc[i] > df['high'].iloc[i-2]) and  # Optional condition for 5m
                 df['low'].iloc[i] > df['low'].iloc[i-1] and
                 df['close'].iloc[i] > df['open'].iloc[i]):
+                
+                strength = self._calculate_choch_strength(df, i, 'bullish')
+                if timeframe == '5m':
+                    strength *= 1.2  # Boost strength for 5m timeframe
+                
                 ch = {
                     'type': 'CHoCH',
                     'direction': 'bullish',
                     'timestamp': df.index[i],
                     'price': df['high'].iloc[i],
-                    'strength': self._calculate_choch_strength(df, i, 'bullish'),
+                    'strength': strength,
                     'timeframe': timeframe
                 }
                 self.supply_zones.append(ch)
@@ -365,60 +364,31 @@ class TechnicalAnalysis:
             
             # Bearish CHoCH
             if (df['low'].iloc[i] < df['low'].iloc[i-1] and
-                df['low'].iloc[i] < df['low'].iloc[i-2] and
+                (timeframe != '5m' or df['low'].iloc[i] < df['low'].iloc[i-2]) and  # Optional condition for 5m
                 df['high'].iloc[i] < df['high'].iloc[i-1] and
                 df['close'].iloc[i] < df['open'].iloc[i]):
+                
+                strength = self._calculate_choch_strength(df, i, 'bearish')
+                if timeframe == '5m':
+                    strength *= 1.2  # Boost strength for 5m timeframe
+                
                 ch = {
                     'type': 'CHoCH',
                     'direction': 'bearish',
                     'timestamp': df.index[i],
                     'price': df['low'].iloc[i],
-                    'strength': self._calculate_choch_strength(df, i, 'bearish'),
+                    'strength': strength,
                     'timeframe': timeframe
                 }
                 self.demand_zones.append(ch)
                 demand_zones.append(ch)
                 self.logger.debug(f"Found bearish CHoCH at {df.index[i]} in {timeframe}")
         
-        # Identify PDL (Previous Day Low) and PDH (Previous Day High)
-        for i in range(window, len(df) - window):
-            # PDL
-            if (df['low'].iloc[i] < df['low'].iloc[i-1] and
-                df['low'].iloc[i] < df['low'].iloc[i-2] and
-                df['close'].iloc[i] > df['open'].iloc[i] and
-                df['volume'].iloc[i] > df['Volume_MA'].iloc[i]):
-                pdl = {
-                    'type': 'PDL',
-                    'timestamp': df.index[i],
-                    'price': df['low'].iloc[i],
-                    'strength': self._calculate_pdl_strength(df, i),
-                    'timeframe': timeframe
-                }
-                self.demand_zones.append(pdl)
-                demand_zones.append(pdl)
-                self.logger.debug(f"Found PDL at {df.index[i]} in {timeframe}")
-            
-            # PDH
-            if (df['high'].iloc[i] > df['high'].iloc[i-1] and
-                df['high'].iloc[i] > df['high'].iloc[i-2] and
-                df['close'].iloc[i] < df['open'].iloc[i] and
-                df['volume'].iloc[i] > df['Volume_MA'].iloc[i]):
-                pdh = {
-                    'type': 'PDH',
-                    'timestamp': df.index[i],
-                    'price': df['high'].iloc[i],
-                    'strength': self._calculate_pdh_strength(df, i),
-                    'timeframe': timeframe
-                }
-                self.supply_zones.append(pdh)
-                supply_zones.append(pdh)
-                self.logger.debug(f"Found PDH at {df.index[i]} in {timeframe}")
-        
-        # Sort by strength and return only the strongest zones
+        # Return more zones for 5m timeframe
         supply_zones.sort(key=lambda x: x['strength'], reverse=True)
         demand_zones.sort(key=lambda x: x['strength'], reverse=True)
-        self.logger.info(f"Found {len(supply_zones)} supply zones and {len(demand_zones)} demand zones for {timeframe}")
-        return supply_zones[:2], demand_zones[:2]  # Return only top 2 strongest zones for scalping
+        max_zones = 3 if timeframe == '5m' else 2
+        return supply_zones[:max_zones], demand_zones[:max_zones]
     
     def _check_fair_value_gap(self, df: pd.DataFrame, index: int, ob_type: str) -> bool:
         """
@@ -502,19 +472,49 @@ class TechnicalAnalysis:
     
     def _validate_supply_zone(self, df: pd.DataFrame, index: int, window: int) -> bool:
         """Validate a supply zone"""
-        # Check if price respects the supply zone
-        for i in range(index + 1, min(index + window, len(df))):
-            if df['high'].iloc[i] > df['high'].iloc[index]:
-                return False
-        return True
+        # More lenient validation for 5m timeframe
+        timeframe = df.index.name if hasattr(df.index, 'name') else 'unknown'
+        if timeframe == '5m':
+            window = min(window, 3)  # Shorter validation window for 5m
+            violation_threshold = 0.001  # Allow small violations
+            violations = 0
+            max_violations = 1  # Allow one violation
+            
+            for i in range(index + 1, min(index + window, len(df))):
+                if df['high'].iloc[i] > df['high'].iloc[index] * (1 + violation_threshold):
+                    violations += 1
+                    if violations > max_violations:
+                        return False
+            return True
+        else:
+            # Original validation for other timeframes
+            for i in range(index + 1, min(index + window, len(df))):
+                if df['high'].iloc[i] > df['high'].iloc[index]:
+                    return False
+            return True
     
     def _validate_demand_zone(self, df: pd.DataFrame, index: int, window: int) -> bool:
         """Validate a demand zone"""
-        # Check if price respects the demand zone
-        for i in range(index + 1, min(index + window, len(df))):
-            if df['low'].iloc[i] < df['low'].iloc[index]:
-                return False
-        return True
+        # More lenient validation for 5m timeframe
+        timeframe = df.index.name if hasattr(df.index, 'name') else 'unknown'
+        if timeframe == '5m':
+            window = min(window, 3)  # Shorter validation window for 5m
+            violation_threshold = 0.001  # Allow small violations
+            violations = 0
+            max_violations = 1  # Allow one violation
+            
+            for i in range(index + 1, min(index + window, len(df))):
+                if df['low'].iloc[i] < df['low'].iloc[index] * (1 - violation_threshold):
+                    violations += 1
+                    if violations > max_violations:
+                        return False
+            return True
+        else:
+            # Original validation for other timeframes
+            for i in range(index + 1, min(index + window, len(df))):
+                if df['low'].iloc[i] < df['low'].iloc[index]:
+                    return False
+            return True
     
     def _calculate_ob_strength(self, df: pd.DataFrame, index: int, ob_type: str) -> float:
         """Calculate the strength of an order block"""
@@ -629,17 +629,25 @@ class TechnicalAnalysis:
         """Identify Fair Value Gaps (FVG) in the market structure"""
         fvgs = []
         try:
+            # More sensitive gap size threshold for 5m timeframe
+            gap_threshold = 0.0001 if timeframe == '5m' else 0.0002  # Even smaller threshold for 5m
+            
             for i in range(1, len(df)-1):
                 # Bullish FVG
                 if df['low'].iloc[i+1] > df['high'].iloc[i-1]:
                     gap_size = df['low'].iloc[i+1] - df['high'].iloc[i-1]
-                    if gap_size > df['close'].iloc[i] * 0.0002:  # Minimum gap size threshold
+                    if gap_size > df['close'].iloc[i] * gap_threshold:
+                        strength = gap_size / (df['close'].iloc[i] * (0.0005 if timeframe == '5m' else 0.001))  # More sensitive strength calc for 5m
+                        if timeframe == '5m':
+                            strength *= 1.5  # Boost strength even more for 5m timeframe
+                        
                         fvg = {
                             'type': 'bullish',
                             'timestamp': df.index[i],
                             'upper_price': df['low'].iloc[i+1],
                             'lower_price': df['high'].iloc[i-1],
                             'gap_size': gap_size,
+                            'strength': min(strength, 1.0),  # Normalize strength
                             'timeframe': timeframe
                         }
                         fvgs.append(fvg)
@@ -648,19 +656,27 @@ class TechnicalAnalysis:
                 # Bearish FVG
                 if df['high'].iloc[i+1] < df['low'].iloc[i-1]:
                     gap_size = df['low'].iloc[i-1] - df['high'].iloc[i+1]
-                    if gap_size > df['close'].iloc[i] * 0.0002:  # Minimum gap size threshold
+                    if gap_size > df['close'].iloc[i] * gap_threshold:
+                        strength = gap_size / (df['close'].iloc[i] * (0.0005 if timeframe == '5m' else 0.001))  # More sensitive strength calc for 5m
+                        if timeframe == '5m':
+                            strength *= 1.5  # Boost strength even more for 5m timeframe
+                        
                         fvg = {
                             'type': 'bearish',
                             'timestamp': df.index[i],
                             'upper_price': df['low'].iloc[i-1],
                             'lower_price': df['high'].iloc[i+1],
                             'gap_size': gap_size,
+                            'strength': min(strength, 1.0),  # Normalize strength
                             'timeframe': timeframe
                         }
                         fvgs.append(fvg)
                         self.logger.debug(f"Found bearish FVG at {df.index[i]} in {timeframe}")
             
-            return fvgs
+            # Sort by strength and return more gaps for 5m
+            fvgs.sort(key=lambda x: x['strength'], reverse=True)
+            max_gaps = 5 if timeframe == '5m' else 3
+            return fvgs[:max_gaps]
             
         except Exception as e:
             self.logger.error(f"Error identifying FVGs: {str(e)}")

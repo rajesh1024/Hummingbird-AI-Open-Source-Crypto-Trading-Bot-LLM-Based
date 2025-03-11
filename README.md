@@ -95,6 +95,9 @@ python src/main.py --symbol BTC/USDT --scalping
 
 # Scalping mode with specific model
 python src/main.py --symbol BTC/USDT --scalping --model gemini
+
+# New Command for gemini model Scalping
+python src/main.py --symbol BTC/USDT --model gemini --mode scalping
 ```
 
 Available model options:
@@ -105,13 +108,14 @@ Available model options:
 The system will:
 
 1. Initial Analysis:
+
    - Fetch historical data for all configured timeframes
    - Calculate technical indicators
    - Identify market patterns (order blocks, supply/demand zones)
    - Generate initial trading signals using LLM
    - Display results in a beautiful CLI interface
-
 2. Position Monitoring:
+
    - Track active positions (Long/Short)
    - Monitor market structure shifts
    - Analyze price action for reversal patterns
@@ -122,8 +126,8 @@ The system will:
      - Reversal patterns are detected
      - Stop-loss levels are hit
    - Provide real-time position management recommendations
-
 3. SMC Analysis:
+
    - Identify institutional order blocks
    - Detect smart money traps
    - Monitor liquidity levels
@@ -176,12 +180,14 @@ Gemini Pro features:
 The system implements advanced position management through continuous market analysis:
 
 ### Entry Signals
+
 - Generated based on SMC principles
 - Validated through multiple timeframes
 - Confirmed by market structure alignment
 - Includes initial stop-loss and take-profit levels
 
 ### Position Monitoring
+
 - Real-time market structure analysis
 - Continuous SMC pattern validation
 - Price action monitoring
@@ -189,7 +195,9 @@ The system implements advanced position management through continuous market ana
 - Liquidity level tracking
 
 ### Exit Signals
+
 Generated when:
+
 - Profit targets are reached
 - Market structure shifts against position
 - Reversal patterns are detected
@@ -198,6 +206,7 @@ Generated when:
 - Fair value gaps are filled
 
 ### Position Management Features
+
 - Dynamic stop-loss adjustment
 - Trailing profit targets
 - Position scaling recommendations
