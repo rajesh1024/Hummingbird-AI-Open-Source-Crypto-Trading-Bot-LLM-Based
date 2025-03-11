@@ -7,8 +7,6 @@ import os
 from dotenv import load_dotenv
 from rich.console import Console
 import time
-import redis
-import json
 
 console = Console()
 logging.basicConfig(level=logging.INFO)
@@ -18,8 +16,6 @@ class MarketData:
     def __init__(self, config: Dict):
         self.logger = logging.getLogger(__name__)
         self.config = config
-        self.exchange = self._initialize_exchange()
-        self.redis_client = self._initialize_redis()
         
         load_dotenv()  # Load environment variables
         
@@ -35,26 +31,8 @@ class MarketData:
         api_key = api_key.strip()
         api_secret = api_secret.strip()
         
-        # Initialize Binance exchange
-        self.exchange = ccxt.binance({
-            'apiKey': api_key,
-            'secret': api_secret,
-            'enableRateLimit': True,  # Enable built-in rate limiter
-            'options': {
-                'defaultType': 'spot',  # Use spot market
-                'adjustForTimeDifference': True,
-                'recvWindow': 60000,  # Increase receive window
-            }
-        })
-        
-        # Test API connection
-        try:
-            self.exchange.load_markets()
-            console.print("[bold green]✓ Successfully connected to Binance API")
-        except Exception as e:
-            console.print(f"[bold red]Error connecting to Binance API: {str(e)}")
-            console.print("[yellow]Please check your API key and secret in the .env file")
-            raise
+        # Initialize exchange
+        self.exchange = self._initialize_exchange(api_key, api_secret)
         
         self.timeframes = {
             "1d": "1d",
@@ -65,50 +43,6 @@ class MarketData:
             "1m": "1m"
         }
     
-    def _initialize_redis(self) -> redis.Redis:
-        """Initialize Redis connection"""
-        try:
-            redis_host = self.config.get('redis', {}).get('host', 'localhost')
-            redis_port = self.config.get('redis', {}).get('port', 6379)
-            redis_db = self.config.get('redis', {}).get('db', 0)
-            return redis.Redis(host=redis_host, port=redis_port, db=redis_db)
-        except Exception as e:
-            self.logger.error(f"Failed to initialize Redis: {str(e)}")
-            return None
-            
-    def _get_cached_data(self, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
-        """Get market data from Redis cache"""
-        if not self.redis_client:
-            return None
-            
-        try:
-            cache_key = f"market_data:{symbol}:{timeframe}"
-            cached_data = self.redis_client.get(cache_key)
-            if cached_data:
-                data_dict = json.loads(cached_data)
-                df = pd.DataFrame.from_dict(data_dict)
-                df.index = pd.to_datetime(df.index)
-                return df
-        except Exception as e:
-            self.logger.error(f"Error getting cached data: {str(e)}")
-        return None
-        
-    def _cache_data(self, symbol: str, timeframe: str, df: pd.DataFrame, ttl: int = 300):
-        """Cache market data in Redis"""
-        if not self.redis_client:
-            return
-            
-        try:
-            cache_key = f"market_data:{symbol}:{timeframe}"
-            data_dict = df.to_dict()
-            self.redis_client.setex(
-                cache_key,
-                ttl,
-                json.dumps(data_dict)
-            )
-        except Exception as e:
-            self.logger.error(f"Error caching data: {str(e)}")
-            
     def get_current_price(self, symbol: str) -> float:
         """
         Get the current price directly from Binance's ticker endpoint
@@ -126,19 +60,27 @@ class MarketData:
             raise
     
     def fetch_historical_data(self, symbol: str, timeframe: str, limit: int = 1000) -> pd.DataFrame:
-        """Fetch historical market data with caching"""
+        """Fetch historical market data"""
         try:
-            # Check cache first
-            cached_data = self._get_cached_data(symbol, timeframe)
-            if cached_data is not None:
-                self.logger.info(f"Using cached data for {symbol} {timeframe}")
-                return cached_data
-                
             # Format symbol if needed
             if '/' not in symbol:
                 symbol = f"{symbol}/USDT"
                 
             self.logger.info(f"Fetching historical data for {symbol} {timeframe}")
+            
+            # Calculate the number of candles needed based on timeframe
+            if timeframe == '1m':
+                limit = 1500  # 1500 minutes = 25 hours (increased from 1000)
+            elif timeframe == '5m':
+                limit = 1000  # 1000 5-minute candles = ~83.3 hours (increased from 500)
+            elif timeframe == '15m':
+                limit = 800   # 800 15-minute candles = ~200 hours (increased from 400)
+            elif timeframe == '1h':
+                limit = 500   # 500 hours = ~20.8 days (increased from 300)
+            elif timeframe == '4h':
+                limit = 300   # 300 4-hour candles = 50 days (increased from 200)
+            elif timeframe == '1d':
+                limit = 200   # 200 days (increased from 100)
             
             # Handle 1m timeframe with rate limiting
             if timeframe == '1m':
@@ -148,15 +90,22 @@ class MarketData:
                 
                 while remaining_limit > 0:
                     try:
+                        # If this is not the first request, use the timestamp of the last candle as until
+                        until = None
+                        if all_candles:
+                            until = all_candles[0][0] - 1  # Subtract 1ms to avoid duplicate candle
+                        
                         candles = self.exchange.fetch_ohlcv(
                             symbol,
                             timeframe,
-                            limit=current_limit
+                            limit=current_limit,
+                            params={'until': until} if until else {}
                         )
+                        
                         if not candles:
                             break
                             
-                        all_candles.extend(candles)
+                        all_candles = candles + all_candles  # Prepend new candles
                         remaining_limit -= len(candles)
                         
                         # Add small delay to respect rate limits
@@ -189,9 +138,7 @@ class MarketData:
             # Convert timestamp to datetime
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            
-            # Cache the data
-            self._cache_data(symbol, timeframe, df)
+            df.index.name = timeframe  # Set the timeframe as the index name
             
             self.logger.info(f"Successfully fetched {len(df)} candles for {symbol} {timeframe}")
             return df
@@ -260,4 +207,30 @@ class MarketData:
             return self.exchange.fetch_order_book(symbol)
         except Exception as e:
             console.print(f"[bold red]Error fetching orderbook: {str(e)}")
+            raise
+
+    def _initialize_exchange(self, api_key: str, api_secret: str) -> ccxt.Exchange:
+        """
+        Initialize the cryptocurrency exchange connection
+        """
+        try:
+            # Initialize Binance exchange
+            exchange = ccxt.binance({
+                'apiKey': api_key,
+                'secret': api_secret,
+                'enableRateLimit': True,  # Enable built-in rate limiter
+                'options': {
+                    'defaultType': 'spot',  # Use spot market
+                    'adjustForTimeDifference': True,
+                    'recvWindow': 60000,  # Increase receive window
+                }
+            })
+            
+            # Test API connection
+            exchange.load_markets()
+            self.logger.info("Successfully connected to Binance exchange")
+            return exchange
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize exchange: {str(e)}")
             raise 

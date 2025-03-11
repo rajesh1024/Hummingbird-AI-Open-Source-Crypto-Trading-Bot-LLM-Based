@@ -53,7 +53,7 @@ class Hummingbird:
         
         self.position_manager = PositionManager(self.db)
         self.market_structure = MarketStructureAnalyzer(self.db, self.config)
-        self.market_data = MarketData()
+        self.market_data = MarketData(self.config)
         self.technical_analyzer = TechnicalAnalysis()
         self.llm_analyzer = LLMAnalyzer(
             model_config=self.config['llm'],
@@ -243,11 +243,18 @@ class Hummingbird:
                 # Calculate technical indicators for all timeframes
                 indicators_task = progress.add_task("[yellow]Calculating technical indicators...", total=len(market_data))
                 technical_indicators = {}
+                processed_data = {}  # Store processed dataframes with indicators
                 
                 for tf, df in market_data.items():
                     try:
+                        # Ensure we have enough data points
+                        if len(df) < 26:  # Minimum required for MACD
+                            self.logger.warning(f"Insufficient data points for {tf}: {len(df)}")
+                            continue
+                            
                         df_with_indicators = self.technical_analyzer.calculate_indicators(df)
                         if df_with_indicators is not None and not df_with_indicators.empty:
+                            processed_data[tf] = df_with_indicators  # Store processed dataframe
                             technical_indicators[tf] = {
                                 'RSI': df_with_indicators['RSI'].iloc[-1],
                                 'MACD': df_with_indicators['MACD'].iloc[-1],
@@ -263,14 +270,21 @@ class Hummingbird:
                     progress.advance(indicators_task)
                 
                 # Analyze market structure for all timeframes
-                structure_task = progress.add_task("[green]Analyzing market structure...", total=len(market_data))
+                structure_task = progress.add_task("[green]Analyzing market structure...", total=len(processed_data))
                 market_structure = {}
                 
-                for tf, df in market_data.items():
+                for tf, df in processed_data.items():  # Use processed data with indicators
                     try:
+                        # Ensure we have all required columns
+                        required_columns = ['open', 'high', 'low', 'close', 'volume', 'RSI', 'EMA_21']
+                        if not all(col in df.columns for col in required_columns):
+                            self.logger.warning(f"Missing required columns for {tf}")
+                            continue
+                            
                         market_structure[tf] = self.market_structure.analyze_market_structure(
                             df,
-                            tf
+                            tf,
+                            symbol
                         )
                     except Exception as e:
                         self.logger.error(f"Error analyzing market structure for {tf}: {str(e)}")
@@ -286,14 +300,23 @@ class Hummingbird:
                     self._display_market_status(symbol, current_price, technical_indicators[primary_timeframe])
                 
                 # Display SMC patterns and market structure for all timeframes
-                for tf, structure in market_structure.items():
-                    if structure is not None:
+                for tf, df in processed_data.items():
+                    if df is not None and not df.empty:
                         console.print(f"\n[bold yellow]SMC Analysis for {tf} Timeframe:")
-                        self._display_patterns(
-                            structure.order_blocks,
-                            structure.fair_value_gaps,
-                            structure.liquidity_levels
-                        )
+                        # Get the technical indicators for this timeframe
+                        indicators = technical_indicators.get(tf, {})
+                        
+                        # Create market structure data dictionary
+                        smc_data = {
+                            'Order_Blocks': self.technical_analyzer.indicators.get('Order_Blocks', []),
+                            'Supply_Zones': self.technical_analyzer.indicators.get('Supply_Zones', []),
+                            'Demand_Zones': self.technical_analyzer.indicators.get('Demand_Zones', []),
+                            'Fair_Value_Gaps': self.technical_analyzer.indicators.get('Fair_Value_Gaps', []),
+                            'Liquidity_Levels': self.technical_analyzer.indicators.get('Liquidity_Levels', [])
+                        }
+                        
+                        # Display patterns
+                        self._display_patterns(smc_data)
                 
                 # Generate trading signal using all timeframes
                 if primary_timeframe in market_structure and market_structure[primary_timeframe] is not None:
@@ -350,55 +373,94 @@ class Hummingbird:
             border_style="blue"
         ))
     
-    def _display_patterns(self, order_blocks: List[Dict], fair_value_gaps: List[Dict], liquidity_levels: List[Dict]):
+    def _display_patterns(self, market_structure: Dict):
         """
         Display recent market patterns with SMC details
         """
-        # Debug print raw pattern data
-        console.print("\n[bold yellow]Raw Pattern Data:")
-        console.print(f"Order Blocks Count: {len(order_blocks)}")
-        console.print(f"Fair Value Gaps Count: {len(fair_value_gaps)}")
-        console.print(f"Liquidity Levels Count: {len(liquidity_levels)}")
-        
-        # Display Order Blocks with SMC details
+        if not market_structure:
+            console.print("\n[bold red]No market structure data available")
+            return
+
+        # Display Order Blocks
+        order_blocks = market_structure.get('Order_Blocks', [])
+        console.print("\n[bold cyan]Order Blocks:")
         if order_blocks:
-            console.print("\n[bold cyan]Recent Order Blocks (SMC):")
-            for block in sorted(order_blocks, key=lambda x: x.strength, reverse=True)[:3]:
-                console.print(
-                    f"Type: {block.block_type}, "
-                    f"Price: {block.price:.2f}, "
-                    f"Volume: {block.volume:.2f}, "
-                    f"Strength: {block.strength:.2f}"
-                )
+            for block in sorted(order_blocks, key=lambda x: x['strength'], reverse=True)[:3]:
+                console.print(Panel(
+                    f"Type: {block['type']}\n"
+                    f"Price: {block['price']:.2f}\n"
+                    f"Volume: {block['volume']:.2f}\n"
+                    f"Strength: {block['strength']:.2f}\n"
+                    f"Timeframe: {block['timeframe']}",
+                    title="Order Block",
+                    border_style="cyan"
+                ))
         else:
-            console.print("\n[bold yellow]No Order Blocks identified")
+            console.print("[yellow]No Order Blocks identified")
+
+        # Display Supply and Demand Zones
+        supply_zones = market_structure.get('Supply_Zones', [])
+        demand_zones = market_structure.get('Demand_Zones', [])
         
+        console.print("\n[bold green]Supply and Demand Zones:")
+        if supply_zones:
+            console.print("\nSupply Zones:")
+            for zone in sorted(supply_zones, key=lambda x: x.get('strength', 0), reverse=True)[:3]:
+                console.print(Panel(
+                    f"Type: {zone['type']}\n"
+                    f"Price: {zone['price']:.2f}\n"
+                    f"Strength: {zone.get('strength', 0):.2f}\n"
+                    f"Timeframe: {zone['timeframe']}",
+                    title="Supply Zone",
+                    border_style="red"
+                ))
+        
+        if demand_zones:
+            console.print("\nDemand Zones:")
+            for zone in sorted(demand_zones, key=lambda x: x.get('strength', 0), reverse=True)[:3]:
+                console.print(Panel(
+                    f"Type: {zone['type']}\n"
+                    f"Price: {zone['price']:.2f}\n"
+                    f"Strength: {zone.get('strength', 0):.2f}\n"
+                    f"Timeframe: {zone['timeframe']}",
+                    title="Demand Zone",
+                    border_style="green"
+                ))
+
         # Display Fair Value Gaps
+        fair_value_gaps = market_structure.get('Fair_Value_Gaps', [])
+        console.print("\n[bold yellow]Fair Value Gaps:")
         if fair_value_gaps:
-            console.print("\n[bold yellow]Fair Value Gaps (SMC):")
-            for gap in fair_value_gaps:
-                console.print(
-                    f"Type: {gap.gap_type}, "
-                    f"Upper Price: {gap.upper_price:.2f}, "
-                    f"Lower Price: {gap.lower_price:.2f}, "
-                    f"Volume: {gap.volume:.2f}"
-                )
+            for gap in fair_value_gaps[:3]:
+                console.print(Panel(
+                    f"Type: {gap['type']}\n"
+                    f"Upper Price: {gap['upper_price']:.2f}\n"
+                    f"Lower Price: {gap['lower_price']:.2f}\n"
+                    f"Gap Size: {gap['gap_size']:.2f}\n"
+                    f"Timeframe: {gap['timeframe']}",
+                    title="Fair Value Gap",
+                    border_style="yellow"
+                ))
         else:
-            console.print("\n[bold yellow]No Fair Value Gaps identified")
-        
+            console.print("[yellow]No Fair Value Gaps identified")
+
         # Display Liquidity Levels
+        liquidity_levels = market_structure.get('Liquidity_Levels', [])
+        console.print("\n[bold magenta]Liquidity Levels:")
         if liquidity_levels:
-            console.print("\n[bold magenta]Liquidity Levels (SMC):")
-            for level in liquidity_levels:
-                console.print(
-                    f"Type: {level.level_type}, "
-                    f"Price: {level.price:.2f}, "
-                    f"Volume: {level.volume:.2f}, "
-                    f"Strength: {level.strength:.2f}"
-                )
+            for level in sorted(liquidity_levels, key=lambda x: x['strength'], reverse=True)[:3]:
+                console.print(Panel(
+                    f"Type: {level['type']}\n"
+                    f"Price: {level['price']:.2f}\n"
+                    f"Volume: {level['volume']:.2f}\n"
+                    f"Strength: {level['strength']:.2f}\n"
+                    f"Timeframe: {level['timeframe']}",
+                    title="Liquidity Level",
+                    border_style="magenta"
+                ))
         else:
-            console.print("\n[bold yellow]No Liquidity Levels identified")
-        
+            console.print("[yellow]No Liquidity Levels identified")
+
         console.print()  # Add a blank line for better readability
     
     def run(self):

@@ -11,12 +11,22 @@ Hummingbird is an advanced trading system that combines technical analysis with 
   - Supply/Demand zone identification
   - Fair Value Gaps (FVG)
   - Liquidity sweeps
+  - Market structure shift detection
+  - Institutional order blocks
+  - Smart money traps
 - Real-time market data processing via Binance API
 - LLM-based signal generation with confidence thresholds
 - Dynamic strategy adaptation
 - High-accuracy trading signals with stop-loss and take-profit levels
 - Beautiful CLI interface with rich progress bars and tables
 - Scalping mode for short-term trading opportunities
+- Continuous position monitoring:
+  - Real-time market structure analysis
+  - Position status tracking
+  - Profit target monitoring
+  - Reversal pattern detection
+  - Exit signal generation
+  - Position management recommendations
 
 ## Project Structure
 
@@ -94,11 +104,32 @@ Available model options:
 
 The system will:
 
-- Fetch historical data for all configured timeframes
-- Calculate technical indicators
-- Identify market patterns (order blocks, supply/demand zones)
-- Generate trading signals using LLM
-- Display results in a beautiful CLI interface
+1. Initial Analysis:
+   - Fetch historical data for all configured timeframes
+   - Calculate technical indicators
+   - Identify market patterns (order blocks, supply/demand zones)
+   - Generate initial trading signals using LLM
+   - Display results in a beautiful CLI interface
+
+2. Position Monitoring:
+   - Track active positions (Long/Short)
+   - Monitor market structure shifts
+   - Analyze price action for reversal patterns
+   - Track progress towards profit targets
+   - Generate exit signals when:
+     - Profit targets are reached
+     - Market structure shifts against position
+     - Reversal patterns are detected
+     - Stop-loss levels are hit
+   - Provide real-time position management recommendations
+
+3. SMC Analysis:
+   - Identify institutional order blocks
+   - Detect smart money traps
+   - Monitor liquidity levels
+   - Track fair value gaps
+   - Analyze market structure shifts
+   - Validate position strength
 
 ## Model Selection
 
@@ -139,6 +170,39 @@ Gemini Pro features:
 - Pattern recognition
 - Risk assessment
 - Trade execution recommendations
+
+## Position Management
+
+The system implements advanced position management through continuous market analysis:
+
+### Entry Signals
+- Generated based on SMC principles
+- Validated through multiple timeframes
+- Confirmed by market structure alignment
+- Includes initial stop-loss and take-profit levels
+
+### Position Monitoring
+- Real-time market structure analysis
+- Continuous SMC pattern validation
+- Price action monitoring
+- Volume profile analysis
+- Liquidity level tracking
+
+### Exit Signals
+Generated when:
+- Profit targets are reached
+- Market structure shifts against position
+- Reversal patterns are detected
+- Stop-loss levels are hit
+- Smart money traps are identified
+- Fair value gaps are filled
+
+### Position Management Features
+- Dynamic stop-loss adjustment
+- Trailing profit targets
+- Position scaling recommendations
+- Risk management alerts
+- Market structure shift notifications
 
 ## License
 

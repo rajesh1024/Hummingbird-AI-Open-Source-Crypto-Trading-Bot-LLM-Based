@@ -4,8 +4,6 @@ from typing import Dict, List, Tuple, Optional
 from ..data.models import MarketStructureData, MarketStructure, OrderBlock, FairValueGap, LiquidityLevel
 from ..data.database import DatabaseManager
 from .smc_patterns import SMCPatternDetector
-import redis
-import json
 from datetime import datetime
 import logging
 
@@ -14,103 +12,49 @@ class MarketStructureAnalyzer:
         self.db = db_manager
         self.config = config
         self.smc_detector = SMCPatternDetector(config)
-        self.redis_client = self._initialize_redis()
-    
-    def _initialize_redis(self) -> redis.Redis:
-        """Initialize Redis connection"""
-        try:
-            redis_host = self.config.get('data', {}).get('redis', {}).get('host', 'localhost')
-            redis_port = self.config.get('data', {}).get('redis', {}).get('port', 6379)
-            redis_db = self.config.get('data', {}).get('redis', {}).get('db', 0)
-            return redis.Redis(host=redis_host, port=redis_port, db=redis_db)
-        except Exception as e:
-            logging.error(f"Failed to initialize Redis: {str(e)}")
-            return None
-            
-    def _get_cached_structure(self, symbol: str, timeframe: str) -> Optional[MarketStructureData]:
-        """Get market structure from Redis cache"""
-        if not self.redis_client:
-            return None
-            
-        try:
-            cache_key = f"market_structure:{symbol}:{timeframe}"
-            cached_data = self.redis_client.get(cache_key)
-            if cached_data:
-                data_dict = json.loads(cached_data)
-                return MarketStructureData.from_dict(data_dict)
-        except Exception as e:
-            logging.error(f"Error getting cached market structure: {str(e)}")
-        return None
-        
-    def _cache_structure(self, symbol: str, timeframe: str, structure: MarketStructureData, ttl: int = 300):
-        """Cache market structure in Redis"""
-        if not self.redis_client:
-            return
-            
-        try:
-            cache_key = f"market_structure:{symbol}:{timeframe}"
-            data_dict = structure.to_dict()
-            self.redis_client.setex(
-                cache_key,
-                ttl,
-                json.dumps(data_dict)
-            )
-        except Exception as e:
-            logging.error(f"Error caching market structure: {str(e)}")
     
     def analyze_market_structure(self,
                                df: pd.DataFrame,
                                timeframe: str,
                                symbol: str,
                                position_id: Optional[int] = None) -> MarketStructureData:
-        """Analyze market structure for a given timeframe"""
-        # Check cache first
-        cached_structure = self._get_cached_structure(symbol, timeframe)
-        if cached_structure is not None:
-            logging.info(f"Using cached market structure for {symbol} {timeframe}")
-            return cached_structure
+        """
+        Analyze market structure for a given symbol and timeframe
+        """
+        try:
+            # Determine overall market structure
+            structure_type = self._determine_structure_type(df)
             
-        # Calculate basic market structure
-        high = df['high'].max()
-        low = df['low'].min()
-        volume = df['volume'].sum()
-        
-        # Determine market structure type
-        structure_type = self._determine_structure_type(df)
-        
-        # Create market structure data
-        market_structure = MarketStructureData(
-            position_id=position_id,
-            timeframe=timeframe,
-            structure_type=structure_type,
-            high=high,
-            low=low,
-            volume=volume
-        )
-        
-        # Identify SMC patterns
-        order_blocks = self.smc_detector.detect_institutional_order_blocks(df)
-        for block in order_blocks:
-            market_structure.order_blocks.append(block)
-        
-        # Identify fair value gaps
-        fvgs = self.smc_detector.detect_fair_value_gaps(df)
-        for fvg in fvgs:
-            market_structure.fair_value_gaps.append(fvg)
-        
-        # Identify liquidity levels
-        liquidity_levels = self.smc_detector.detect_liquidity_levels(df)
-        for level in liquidity_levels:
-            market_structure.liquidity_levels.append(level)
-        
-        # Identify smart money traps
-        traps = self.smc_detector.detect_smart_money_traps(df)
-        market_structure.smart_money_traps = traps
-        
-        # Cache the results
-        self._cache_structure(symbol, timeframe, market_structure)
-        
-        return market_structure
+            # Detect SMC patterns
+            order_blocks = self.smc_detector.detect_institutional_order_blocks(df)
+            fair_value_gaps = self.smc_detector.detect_fair_value_gaps(df)
+            liquidity_levels = self.smc_detector.detect_liquidity_levels(df)
+            
+            # Calculate high, low, and volume for the period
+            high = df['high'].max()
+            low = df['low'].min()
+            volume = df['volume'].sum()
+            
+            # Create market structure data
+            structure_data = MarketStructureData(
+                symbol=symbol,
+                timeframe=timeframe,
+                structure_type=structure_type,
+                high=high,
+                low=low,
+                volume=volume,
+                created_at=datetime.utcnow()
+            )
+            
+            # Save to database if position_id is provided
+            if position_id:
+                self.db.save_market_structure(structure_data, position_id)
+            
+            return structure_data
+            
+        except Exception as e:
+            logging.error(f"Error analyzing market structure: {str(e)}")
+            raise
     
     def _determine_structure_type(self, df: pd.DataFrame) -> MarketStructure:
         """Determine the overall market structure type"""

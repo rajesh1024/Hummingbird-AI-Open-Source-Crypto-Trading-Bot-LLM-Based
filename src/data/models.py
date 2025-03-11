@@ -46,6 +46,7 @@ class MarketStructureData(Base):
     
     id = Column(Integer, primary_key=True)
     position_id = Column(Integer, ForeignKey('positions.id'))
+    symbol = Column(String, nullable=False)
     timeframe = Column(String, nullable=False)
     structure_type = Column(SQLEnum(MarketStructure), nullable=False)
     high = Column(Float, nullable=False)

@@ -11,32 +11,51 @@ class SMCPatternDetector:
         """Detect institutional order blocks with advanced pattern recognition"""
         order_blocks = []
         
+        # Validate input data
+        if df is None or df.empty:
+            return order_blocks
+            
+        # Ensure required columns exist
+        required_columns = ['open', 'high', 'low', 'close', 'volume', 'RSI', 'EMA_21']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            self.logger.warning(f"Missing required columns for order block detection: {missing_columns}")
+            return order_blocks
+        
         # Calculate volume profile and price action
-        df['volume_profile'] = df['volume'] * (df['close'] - df['open'])
-        df['body_size'] = abs(df['close'] - df['open'])
-        df['upper_wick'] = df['high'] - df[['open', 'close']].max(axis=1)
-        df['lower_wick'] = df[['open', 'close']].min(axis=1) - df['low']
+        try:
+            df['volume_profile'] = df['volume'] * (df['close'] - df['open'])
+            df['body_size'] = abs(df['close'] - df['open'])
+            df['upper_wick'] = df['high'] - df[['open', 'close']].max(axis=1)
+            df['lower_wick'] = df[['open', 'close']].min(axis=1) - df['low']
+        except Exception as e:
+            self.logger.error(f"Error calculating price action metrics: {str(e)}")
+            return order_blocks
         
         for i in range(2, len(df) - 2):
-            # Bullish institutional order block
-            if self._is_bullish_institutional_block(df, i):
-                block = OrderBlock(
-                    block_type='institutional',
-                    price=df['close'].iloc[i],
-                    volume=df['volume'].iloc[i],
-                    strength=self._calculate_institutional_block_strength(df, i, 'bullish')
-                )
-                order_blocks.append(block)
-            
-            # Bearish institutional order block
-            if self._is_bearish_institutional_block(df, i):
-                block = OrderBlock(
-                    block_type='institutional',
-                    price=df['close'].iloc[i],
-                    volume=df['volume'].iloc[i],
-                    strength=self._calculate_institutional_block_strength(df, i, 'bearish')
-                )
-                order_blocks.append(block)
+            try:
+                # Bullish institutional order block
+                if self._is_bullish_institutional_block(df, i):
+                    block = OrderBlock(
+                        block_type='institutional',
+                        price=df['close'].iloc[i],
+                        volume=df['volume'].iloc[i],
+                        strength=self._calculate_institutional_block_strength(df, i, 'bullish')
+                    )
+                    order_blocks.append(block)
+                
+                # Bearish institutional order block
+                if self._is_bearish_institutional_block(df, i):
+                    block = OrderBlock(
+                        block_type='institutional',
+                        price=df['close'].iloc[i],
+                        volume=df['volume'].iloc[i],
+                        strength=self._calculate_institutional_block_strength(df, i, 'bearish')
+                    )
+                    order_blocks.append(block)
+            except Exception as e:
+                self.logger.error(f"Error processing candle at index {i}: {str(e)}")
+                continue
         
         return order_blocks
     
@@ -44,7 +63,7 @@ class SMCPatternDetector:
         """Check if a candle forms a bullish institutional order block"""
         # Check for strong bullish candle
         if not (df['close'].iloc[index] > df['open'].iloc[index] and
-                df['body_size'].iloc[index] > df['body_size'].mean()):
+                df['body_size'].iloc[index] > df['body_size'].mean() * 0.4):
             return False
         
         # Check for bearish candles after
@@ -53,8 +72,8 @@ class SMCPatternDetector:
             return False
         
         # Check for institutional characteristics
-        if not (df['volume'].iloc[index] > df['volume'].mean() * 1.5 and
-                df['lower_wick'].iloc[index] < df['body_size'].iloc[index] * 0.2):
+        if not (df['volume'].iloc[index] > df['volume'].mean() * 1.02 and
+                df['lower_wick'].iloc[index] < df['body_size'].iloc[index] * 0.6):
             return False
         
         return True
@@ -63,7 +82,7 @@ class SMCPatternDetector:
         """Check if a candle forms a bearish institutional order block"""
         # Check for strong bearish candle
         if not (df['close'].iloc[index] < df['open'].iloc[index] and
-                df['body_size'].iloc[index] > df['body_size'].mean()):
+                df['body_size'].iloc[index] > df['body_size'].mean() * 0.4):
             return False
         
         # Check for bullish candles after
@@ -72,8 +91,8 @@ class SMCPatternDetector:
             return False
         
         # Check for institutional characteristics
-        if not (df['volume'].iloc[index] > df['volume'].mean() * 1.5 and
-                df['upper_wick'].iloc[index] < df['body_size'].iloc[index] * 0.2):
+        if not (df['volume'].iloc[index] > df['volume'].mean() * 1.02 and
+                df['upper_wick'].iloc[index] < df['body_size'].iloc[index] * 0.6):
             return False
         
         return True
@@ -169,13 +188,13 @@ class SMCPatternDetector:
                 df['low'].iloc[index] > df['high'].iloc[index+1]):
             return False
         
-        # Check gap size
+        # Check gap size (reduced minimum size)
         gap_size = df['low'].iloc[index] - max(df['high'].iloc[index-1], df['high'].iloc[index+1])
-        if gap_size < self.config['technical']['smc']['fair_value_gap']['min_size']:
+        if gap_size < self.config['technical']['smc']['fair_value_gap']['min_size'] * 0.5:  # Reduced from 1.0
             return False
         
         # Check volume (more lenient for scalping)
-        if not (df['volume'].iloc[index] > df['volume'].mean() * 0.8):  # Reduced volume requirement
+        if not (df['volume'].iloc[index] > df['volume'].mean() * 0.4):  # Reduced from 0.5
             return False
         
         return True
@@ -187,13 +206,13 @@ class SMCPatternDetector:
                 df['high'].iloc[index] < df['low'].iloc[index+1]):
             return False
         
-        # Check gap size
+        # Check gap size (reduced minimum size)
         gap_size = min(df['low'].iloc[index-1], df['low'].iloc[index+1]) - df['high'].iloc[index]
-        if gap_size < self.config['technical']['smc']['fair_value_gap']['min_size']:
+        if gap_size < self.config['technical']['smc']['fair_value_gap']['min_size'] * 0.5:  # Reduced from 1.0
             return False
         
         # Check volume (more lenient for scalping)
-        if not (df['volume'].iloc[index] > df['volume'].mean() * 0.8):  # Reduced volume requirement
+        if not (df['volume'].iloc[index] > df['volume'].mean() * 0.4):  # Reduced from 0.5
             return False
         
         return True
@@ -237,13 +256,13 @@ class SMCPatternDetector:
                 df['low'].iloc[index] < df['low'].iloc[index+1]):
             return False
         
-        # Check for volume
-        if not (df['volume'].iloc[index] > self.config['technical']['smc']['liquidity_level']['min_volume']):
+        # Check for volume (reduced requirement)
+        if not (df['volume'].iloc[index] > self.config['technical']['smc']['liquidity_level']['min_volume'] * 0.6):  # Reduced from 0.8
             return False
         
-        # Check for touches with allowed deviation
+        # Check for touches with allowed deviation (increased deviation)
         price_level = df['low'].iloc[index]
-        max_deviation = self.config['technical']['smc']['liquidity_level']['max_deviation']
+        max_deviation = self.config['technical']['smc']['liquidity_level']['max_deviation'] * 1.5  # Increased from 1.2
         touches = sum(abs(df['low'] - price_level) <= max_deviation)
         if touches < self.config['technical']['smc']['liquidity_level']['min_touches']:
             return False
@@ -257,13 +276,13 @@ class SMCPatternDetector:
                 df['high'].iloc[index] > df['high'].iloc[index+1]):
             return False
         
-        # Check for volume
-        if not (df['volume'].iloc[index] > self.config['technical']['smc']['liquidity_level']['min_volume']):
+        # Check for volume (reduced requirement)
+        if not (df['volume'].iloc[index] > self.config['technical']['smc']['liquidity_level']['min_volume'] * 0.6):  # Reduced from 0.8
             return False
         
-        # Check for touches with allowed deviation
+        # Check for touches with allowed deviation (increased deviation)
         price_level = df['high'].iloc[index]
-        max_deviation = self.config['technical']['smc']['liquidity_level']['max_deviation']
+        max_deviation = self.config['technical']['smc']['liquidity_level']['max_deviation'] * 1.5  # Increased from 1.2
         touches = sum(abs(df['high'] - price_level) <= max_deviation)
         if touches < self.config['technical']['smc']['liquidity_level']['min_touches']:
             return False

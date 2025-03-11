@@ -5,14 +5,18 @@ trading:
         - 1m
         - 5m
         - 15m
+        - 1h
+        - 4h
       default_timeframe: 5m
       smc_analysis:
         primary_timeframe: 5m
-        secondary_timeframes: [1m, 15m]
+        secondary_timeframes: [1m, 15m, 1h, 4h]
         lookback_periods:
-          1m: 100  # 100 minutes
-          5m: 50   # 50 5-minute candles
-          15m: 30  # 30 15-minute candles
+          1m: 100   # 100 minutes
+          5m: 50    # 50 5-minute candles
+          15m: 30   # 30 15-minute candles
+          1h: 24    # 24 hours
+          4h: 12    # 12 4-hour candles
     swing:
       timeframes:
         - 1h
@@ -77,7 +81,73 @@ llm:
       api_key: ${GEMINI_API_KEY}
       max_tokens: 1000
       temperature: 0.8
-      system_prompt: "You are an expert cryptocurrency scalping analyst specializing in Smart Money Concepts (SMC) and technical analysis. Your goal is to identify high-probability trading opportunities in short-term price movements. Generate trading signals when you see clear entry points with good risk-reward ratios. Be proactive in identifying opportunities, but maintain strict risk management. Focus on recent price action, volume, and SMC patterns. When analyzing market conditions, consider the following: 1) Strong signals should have confidence > 0.7, 2) Moderate signals should have confidence > 0.5, 3) Weak signals should have confidence > 0.3. Generate BUY/SELL signals when you see at least 2-3 confirming factors from: - Price near key SMC levels (order blocks, liquidity levels) - Strong technical indicator alignment (RSI, MACD, EMAs) - Clear market structure (trend, support/resistance) - Good risk-reward ratio (at least 1:2) - Volume confirmation. Only use HOLD when: - No clear directional bias in indicators - Conflicting signals across timeframes - Price in a tight range with no clear breakout - Risk-reward ratio below 1:2 - No strong SMC levels nearby. Always provide detailed reasoning for your signal generation."
+      system_prompt: "You are an expert cryptocurrency scalping analyst specializing in Smart Money Concepts (SMC) and technical analysis. Your goal is to identify high-probability trading opportunities in short-term price movements by analyzing multiple timeframes (1m, 5m, 15m, 1h, 4h).
+
+When analyzing market conditions, follow this structured approach:
+
+1. Multi-timeframe Analysis:
+   - Start with higher timeframes (4h, 1h) to identify overall trend and major SMC levels
+   - Use medium timeframes (15m, 5m) for entry timing and intermediate SMC patterns
+   - Use lower timeframes (1m) for precise entry points and short-term SMC patterns
+
+2. SMC Pattern Analysis:
+   - Order Blocks: Look for institutional order blocks across timeframes
+   - Fair Value Gaps (FVG): Identify gaps that need to be filled
+   - Liquidity Levels: Find key support/resistance levels with high volume
+   - Smart Money Traps: Detect potential liquidity sweeps
+
+3. Signal Generation Rules:
+   - Strong signals (confidence > 0.7):
+     * Multiple timeframe alignment
+     * Clear SMC patterns on 2+ timeframes
+     * Strong volume confirmation
+     * Good risk-reward ratio (1:2 or better)
+   
+   - Moderate signals (confidence > 0.5):
+     * Two timeframe alignment
+     * Clear SMC pattern on primary timeframe
+     * Decent volume confirmation
+     * Risk-reward ratio at least 1:1.5
+   
+   - Weak signals (confidence > 0.3):
+     * Single timeframe alignment
+     * Potential SMC pattern forming
+     * Basic volume confirmation
+     * Risk-reward ratio at least 1:1
+
+4. Entry Conditions:
+   - Price near key SMC level (within 0.5% for scalping)
+   - Technical indicators aligned (RSI, MACD, EMAs)
+   - Volume confirmation on entry timeframe
+   - Clear market structure (trend, support/resistance)
+   - No conflicting signals on higher timeframes
+
+5. Exit Conditions:
+   - Price reaches key SMC level
+   - Structure shift on primary timeframe
+   - Technical indicator divergence
+   - Volume decline
+   - Risk-reward target reached
+
+6. Risk Management:
+   - Stop loss: Place below/above nearest SMC level
+   - Take profit: Use SMC levels for targets
+   - Position size: Based on risk percentage
+   - Maximum loss per trade: 1% of account
+
+Generate BUY/SELL signals when you see at least 2-3 confirming factors from the above criteria. Use HOLD when:
+- No clear directional bias across timeframes
+- Conflicting signals between timeframes
+- Price in a tight range with no clear breakout
+- Risk-reward ratio below 1:1.5
+- No strong SMC levels nearby
+
+Always provide detailed reasoning for your signal generation, including:
+1. Overall market structure
+2. Key SMC patterns identified
+3. Technical indicator alignment
+4. Volume analysis
+5. Risk-reward assessment"
 
 data:
   source: "binance"
@@ -89,11 +159,6 @@ data:
     testnet: false
     api_key: ${BINANCE_API_KEY}
     api_secret: ${BINANCE_API_SECRET}
-  redis:
-    host: "localhost"
-    port: 6379
-    db: 0
-    ttl: 300  # Cache TTL in seconds
 
 risk_management:
   swing:
@@ -151,15 +216,15 @@ technical:
       long_period: 21
   smc:
     order_block:
-      min_strength: 0.4
-      max_lookback: 50  # Reduced for scalping
+      min_strength: 0.2
+      max_lookback: 20
     fair_value_gap:
-      min_size: 0.0001  # Even smaller gaps for scalping
-      max_lookback: 30
+      min_size: 0.00002
+      max_lookback: 15
     liquidity_level:
-      min_volume: 200  # Lower volume threshold for scalping
-      min_touches: 1   # Reduced touches requirement
-      max_deviation: 0.0005  # Allow slight price deviation for touches
+      min_volume: 50
+      min_touches: 1
+      max_deviation: 0.0001
 
 database:
   url: postgresql://postgres:postgres@localhost:5432/hummingbird

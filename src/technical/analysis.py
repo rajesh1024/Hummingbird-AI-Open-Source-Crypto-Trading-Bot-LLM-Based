@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 class TechnicalAnalysis:
     def __init__(self):
+        self.logger = logging.getLogger(__name__)
         self.indicators = {}
         self.fair_value_gaps = []
         self.liquidity_sweeps = []
@@ -36,10 +37,29 @@ class TechnicalAnalysis:
                 self.logger.error(f"Missing required columns: {missing_columns}")
                 return pd.DataFrame()
             
-            # Ensure we have enough data points
-            if len(df) < 50:  # Minimum required for all indicators
-                self.logger.warning(f"Insufficient data points: {len(df)}")
+            # Set minimum required points based on timeframe
+            timeframe = df.index.name if hasattr(df.index, 'name') else 'unknown'
+            if timeframe == '1h':
+                min_required_points = 24  # 1 day of hourly data
+            elif timeframe == '4h':
+                min_required_points = 20  # ~3 days of 4h data
+            elif timeframe == '1d':
+                min_required_points = 20  # 20 days
+            elif timeframe == '15m':
+                min_required_points = 30  # Reduced from 50 for scalping
+            elif timeframe == '5m':
+                min_required_points = 25  # Reduced for scalping
+            elif timeframe == '1m':
+                min_required_points = 20  # Reduced for scalping
+            else:
+                min_required_points = 26  # Default value
+
+            if len(df) < min_required_points:
+                self.logger.warning(f"Insufficient data points for {timeframe}: {len(df)} (minimum required: {min_required_points})")
                 return pd.DataFrame()
+            
+            # Log data points for debugging
+            self.logger.debug(f"Processing {len(df)} data points for {timeframe}")
             
             # Volume indicators first (since other calculations depend on it)
             try:
@@ -59,10 +79,52 @@ class TechnicalAnalysis:
             
             # MACD with multiple settings
             try:
-                macd = ta.macd(df['close'])
-                df['MACD'] = macd['MACD_12_26_9']
-                df['MACD_Signal'] = macd['MACDs_12_26_9']
-                df['MACD_Hist'] = macd['MACDh_12_26_9']
+                # Clean the close price data before MACD calculation
+                df['close'] = df['close'].astype(float)  # Ensure close price is float
+                df['close'] = df['close'].replace([np.inf, -np.inf, None], np.nan)
+                df['close'] = df['close'].ffill().bfill()
+                
+                # Log the state of close prices before MACD calculation
+                self.logger.debug(f"Close prices before MACD: {df['close'].head()}")
+                self.logger.debug(f"Close prices shape: {df['close'].shape}")
+                self.logger.debug(f"Close prices null count: {df['close'].isna().sum()}")
+                
+                if df['close'].isna().any():
+                    self.logger.warning("Close price contains NaN values after cleaning")
+                    return pd.DataFrame()
+                
+                if len(df) < 26:
+                    self.logger.warning(f"Insufficient data points for MACD: {len(df)}")
+                    return pd.DataFrame()
+                
+                # Calculate MACD using pandas_ta with explicit parameters
+                try:
+                    # Calculate MACD components manually first
+                    exp1 = df['close'].ewm(span=12, adjust=False).mean()
+                    exp2 = df['close'].ewm(span=26, adjust=False).mean()
+                    macd_line = exp1 - exp2
+                    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+                    histogram = macd_line - signal_line
+                    
+                    # Assign the calculated values
+                    df['MACD'] = macd_line
+                    df['MACD_Signal'] = signal_line
+                    df['MACD_Hist'] = histogram
+                    
+                    # Clean any remaining invalid values
+                    df['MACD'] = df['MACD'].replace([np.inf, -np.inf, None], 0)
+                    df['MACD_Signal'] = df['MACD_Signal'].replace([np.inf, -np.inf, None], 0)
+                    df['MACD_Hist'] = df['MACD_Hist'].replace([np.inf, -np.inf, None], 0)
+                    
+                except Exception as e:
+                    self.logger.error(f"Error in manual MACD calculation: {str(e)}")
+                    return pd.DataFrame()
+                
+                # Final validation
+                if df['MACD'].isna().any() or df['MACD_Signal'].isna().any() or df['MACD_Hist'].isna().any():
+                    self.logger.warning("MACD values contain NaN after calculation")
+                    return pd.DataFrame()
+                
             except Exception as e:
                 self.logger.error(f"Error calculating MACD: {str(e)}")
                 return pd.DataFrame()
@@ -103,6 +165,52 @@ class TechnicalAnalysis:
                 'Volume_Ratio': df['Volume_Ratio']
             }
             
+            # Calculate SMC indicators
+            try:
+                timeframe = df.index.name if hasattr(df.index, 'name') else 'unknown'
+                self.logger.debug(f"Starting SMC analysis for {timeframe}")
+                
+                # Identify order blocks
+                order_blocks = self.identify_order_blocks(df, timeframe=timeframe)
+                if order_blocks:
+                    self.logger.debug(f"Found {len(order_blocks)} order blocks for {timeframe}")
+                
+                # Identify supply and demand zones
+                supply_zones, demand_zones = self.identify_supply_demand_zones(df, timeframe=timeframe)
+                if supply_zones or demand_zones:
+                    self.logger.debug(f"Found {len(supply_zones)} supply zones and {len(demand_zones)} demand zones for {timeframe}")
+                
+                # Identify Fair Value Gaps
+                fair_value_gaps = self.identify_fair_value_gaps(df, timeframe=timeframe)
+                if fair_value_gaps:
+                    self.logger.debug(f"Found {len(fair_value_gaps)} fair value gaps for {timeframe}")
+                
+                # Identify Liquidity Levels
+                liquidity_levels = self.identify_liquidity_levels(df, timeframe=timeframe)
+                if liquidity_levels:
+                    self.logger.debug(f"Found {len(liquidity_levels)} liquidity levels for {timeframe}")
+                
+                # Store SMC data in indicators
+                self.indicators.update({
+                    'Order_Blocks': order_blocks,
+                    'Supply_Zones': supply_zones,
+                    'Demand_Zones': demand_zones,
+                    'Fair_Value_Gaps': fair_value_gaps,
+                    'Liquidity_Levels': liquidity_levels
+                })
+                
+                # Log SMC analysis summary
+                self.logger.info(f"\nSMC Analysis Summary for {timeframe}:")
+                self.logger.info(f"Order Blocks: {len(order_blocks)}")
+                self.logger.info(f"Supply Zones: {len(supply_zones)}")
+                self.logger.info(f"Demand Zones: {len(demand_zones)}")
+                self.logger.info(f"Fair Value Gaps: {len(fair_value_gaps)}")
+                self.logger.info(f"Liquidity Levels: {len(liquidity_levels)}")
+                
+            except Exception as e:
+                self.logger.error(f"Error calculating SMC indicators: {str(e)}")
+                self.logger.error(f"Traceback: ", exc_info=True)
+            
             return df
             
         except Exception as e:
@@ -129,32 +237,41 @@ class TechnicalAnalysis:
         
         # Adjust window size based on timeframe
         if timeframe == '15m':
-            window = 10  # Look at last 10 candles for 15m
+            window = 15  # Increased from 10
         elif timeframe == '5m':
-            window = 15  # Look at last 15 candles for 5m
+            window = 20  # Increased from 15
         elif timeframe == '3m':
-            window = 20  # Look at last 20 candles for 3m
+            window = 25  # Increased from 20
+        elif timeframe == '1h':
+            window = 12  # Increased from 8
+        elif timeframe == '4h':
+            window = 10  # Increased from 6
         
         order_blocks = []
         
         # Ensure we have enough data
         if len(df) < window * 2:
+            self.logger.debug(f"Insufficient data for order blocks in {timeframe}: {len(df)} < {window * 2}")
             return order_blocks
         
+        self.logger.debug(f"Analyzing order blocks for {timeframe} with window size {window}")
+        
         for i in range(window, len(df) - window):
-            # Check for significant volume (adjust threshold based on timeframe)
-            volume_threshold = df['Volume_MA'].iloc[i] * (1.5 if timeframe == '15m' else 1.2)
+            # Check for significant volume (more lenient threshold)
+            volume_threshold = df['Volume_MA'].iloc[i] * (1.2 if timeframe in ['15m', '5m'] else 1.1)
             
             # Bullish Order Block (ICT principles)
             if (df['close'].iloc[i] > df['open'].iloc[i] and  # Bullish candle
-                df['volume'].iloc[i] > volume_threshold and    # High volume
+                df['volume'].iloc[i] > volume_threshold * 0.8 and    # Reduced volume threshold for scalping
                 df['low'].iloc[i] < df['low'].iloc[i-1] and    # Lower low
-                df['low'].iloc[i] < df['low'].iloc[i+1] and    # Lower low
                 df['close'].iloc[i] > df['EMA_21'].iloc[i] and # Price above EMA21
-                df['RSI'].iloc[i] < 40):  # RSI oversold condition
+                df['RSI'].iloc[i] < 50):  # More lenient RSI condition for scalping
                 
-                # Validate with surrounding price action
-                if self._validate_bullish_ob(df, i, window):
+                # Log potential bullish order block
+                self.logger.debug(f"Found potential bullish order block at {df.index[i]} in {timeframe}")
+                
+                # Validate with surrounding price action (reduced validation period for scalping)
+                if self._validate_bullish_ob(df, i, min(window, 5)):
                     ob = {
                         'type': 'bullish',
                         'timestamp': df.index[i],
@@ -165,17 +282,20 @@ class TechnicalAnalysis:
                     }
                     order_blocks.append(ob)
                     self.order_blocks.append(ob)
+                    self.logger.info(f"Confirmed bullish order block at {df.index[i]} in {timeframe}")
             
             # Bearish Order Block (ICT principles)
             if (df['close'].iloc[i] < df['open'].iloc[i] and  # Bearish candle
-                df['volume'].iloc[i] > volume_threshold and    # High volume
+                df['volume'].iloc[i] > volume_threshold * 0.8 and    # Reduced volume threshold for scalping
                 df['high'].iloc[i] > df['high'].iloc[i-1] and  # Higher high
-                df['high'].iloc[i] > df['high'].iloc[i+1] and  # Higher high
                 df['close'].iloc[i] < df['EMA_21'].iloc[i] and # Price below EMA21
-                df['RSI'].iloc[i] > 60):  # RSI overbought condition
+                df['RSI'].iloc[i] > 50):  # More lenient RSI condition for scalping
                 
-                # Validate with surrounding price action
-                if self._validate_bearish_ob(df, i, window):
+                # Log potential bearish order block
+                self.logger.debug(f"Found potential bearish order block at {df.index[i]} in {timeframe}")
+                
+                # Validate with surrounding price action (reduced validation period for scalping)
+                if self._validate_bearish_ob(df, i, min(window, 5)):
                     ob = {
                         'type': 'bearish',
                         'timestamp': df.index[i],
@@ -186,9 +306,11 @@ class TechnicalAnalysis:
                     }
                     order_blocks.append(ob)
                     self.order_blocks.append(ob)
+                    self.logger.info(f"Confirmed bearish order block at {df.index[i]} in {timeframe}")
         
         # Sort by strength and return only the strongest blocks
         order_blocks.sort(key=lambda x: x['strength'], reverse=True)
+        self.logger.info(f"Found {len(order_blocks)} order blocks for {timeframe}")
         return order_blocks[:3]  # Return only top 3 strongest blocks for scalping
     
     def identify_supply_demand_zones(
@@ -212,9 +334,15 @@ class TechnicalAnalysis:
             window = 15
         elif timeframe == '3m':
             window = 20
+        elif timeframe == '1h':
+            window = 8
+        elif timeframe == '4h':
+            window = 6
         
         supply_zones = []
         demand_zones = []
+        
+        self.logger.debug(f"Analyzing supply/demand zones for {timeframe} with window size {window}")
         
         # Identify CHoCH (Change of Character)
         for i in range(window, len(df) - window):
@@ -233,6 +361,7 @@ class TechnicalAnalysis:
                 }
                 self.supply_zones.append(ch)
                 supply_zones.append(ch)
+                self.logger.debug(f"Found bullish CHoCH at {df.index[i]} in {timeframe}")
             
             # Bearish CHoCH
             if (df['low'].iloc[i] < df['low'].iloc[i-1] and
@@ -249,6 +378,7 @@ class TechnicalAnalysis:
                 }
                 self.demand_zones.append(ch)
                 demand_zones.append(ch)
+                self.logger.debug(f"Found bearish CHoCH at {df.index[i]} in {timeframe}")
         
         # Identify PDL (Previous Day Low) and PDH (Previous Day High)
         for i in range(window, len(df) - window):
@@ -266,6 +396,7 @@ class TechnicalAnalysis:
                 }
                 self.demand_zones.append(pdl)
                 demand_zones.append(pdl)
+                self.logger.debug(f"Found PDL at {df.index[i]} in {timeframe}")
             
             # PDH
             if (df['high'].iloc[i] > df['high'].iloc[i-1] and
@@ -281,10 +412,12 @@ class TechnicalAnalysis:
                 }
                 self.supply_zones.append(pdh)
                 supply_zones.append(pdh)
+                self.logger.debug(f"Found PDH at {df.index[i]} in {timeframe}")
         
         # Sort by strength and return only the strongest zones
         supply_zones.sort(key=lambda x: x['strength'], reverse=True)
         demand_zones.sort(key=lambda x: x['strength'], reverse=True)
+        self.logger.info(f"Found {len(supply_zones)} supply zones and {len(demand_zones)} demand zones for {timeframe}")
         return supply_zones[:2], demand_zones[:2]  # Return only top 2 strongest zones for scalping
     
     def _check_fair_value_gap(self, df: pd.DataFrame, index: int, ob_type: str) -> bool:
@@ -419,46 +552,203 @@ class TechnicalAnalysis:
         # Combine strengths
         return (volume_strength + price_strength) / 2
     
-    def _calculate_choch_strength(self, df: pd.DataFrame, index: int, direction: str) -> float:
-        """Calculate the strength of a Change of Character"""
-        # Volume strength
-        volume_strength = df['volume'].iloc[index] / df['Volume_MA'].iloc[index]
-        
-        # Price action strength
-        if direction == 'bullish':
-            body_size = df['close'].iloc[index] - df['open'].iloc[index]
-            total_size = df['high'].iloc[index] - df['low'].iloc[index]
-            price_strength = body_size / total_size if total_size > 0 else 0
-        else:  # bearish
-            body_size = df['open'].iloc[index] - df['close'].iloc[index]
-            total_size = df['high'].iloc[index] - df['low'].iloc[index]
-            price_strength = body_size / total_size if total_size > 0 else 0
-        
-        # Combine strengths
-        return (volume_strength + price_strength) / 2
-    
-    def _calculate_pdl_strength(self, df: pd.DataFrame, index: int) -> float:
-        """Calculate the strength of a Previous Day Low"""
-        # Volume strength
-        volume_strength = df['volume'].iloc[index] / df['Volume_MA'].iloc[index]
-        
-        # Price action strength
-        body_size = df['close'].iloc[index] - df['open'].iloc[index]
-        total_size = df['high'].iloc[index] - df['low'].iloc[index]
-        price_strength = body_size / total_size if total_size > 0 else 0
-        
-        # Combine strengths
-        return (volume_strength + price_strength) / 2
-    
-    def _calculate_pdh_strength(self, df: pd.DataFrame, index: int) -> float:
-        """Calculate the strength of a Previous Day High"""
-        # Volume strength
-        volume_strength = df['volume'].iloc[index] / df['Volume_MA'].iloc[index]
-        
-        # Price action strength
-        body_size = df['open'].iloc[index] - df['close'].iloc[index]
-        total_size = df['high'].iloc[index] - df['low'].iloc[index]
-        price_strength = body_size / total_size if total_size > 0 else 0
-        
-        # Combine strengths
-        return (volume_strength + price_strength) / 2 
+    def _calculate_choch_strength(self, df: pd.DataFrame, i: int, direction: str) -> float:
+        """Calculate Change of Character (CHoCH) strength"""
+        try:
+            # Volume component
+            volume_strength = df['volume'].iloc[i] / df['Volume_MA'].iloc[i]
+            
+            # Price movement component
+            if direction == 'bullish':
+                price_movement = (df['high'].iloc[i] - df['low'].iloc[i-1]) / df['low'].iloc[i-1]
+            else:  # bearish
+                price_movement = (df['high'].iloc[i-1] - df['low'].iloc[i]) / df['high'].iloc[i-1]
+            
+            # RSI component
+            rsi_strength = 0
+            if direction == 'bullish' and df['RSI'].iloc[i] < 30:
+                rsi_strength = (30 - df['RSI'].iloc[i]) / 30
+            elif direction == 'bearish' and df['RSI'].iloc[i] > 70:
+                rsi_strength = (df['RSI'].iloc[i] - 70) / 30
+            
+            # Combine components
+            strength = (volume_strength * 0.4 + price_movement * 0.4 + rsi_strength * 0.2)
+            return min(max(strength, 0), 1)  # Normalize between 0 and 1
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating CHoCH strength: {str(e)}")
+            return 0.0
+
+    def _calculate_pdl_strength(self, df: pd.DataFrame, i: int) -> float:
+        """Calculate Previous Day Low (PDL) strength"""
+        try:
+            # Volume component
+            volume_strength = df['volume'].iloc[i] / df['Volume_MA'].iloc[i]
+            
+            # Price bounce component
+            price_bounce = (df['close'].iloc[i] - df['low'].iloc[i]) / df['low'].iloc[i]
+            
+            # Previous candles confirmation
+            prev_candles_strength = 0
+            if i >= 3:
+                lower_lows = sum(1 for j in range(i-3, i) if df['low'].iloc[j] > df['low'].iloc[i])
+                prev_candles_strength = lower_lows / 3
+            
+            # Combine components
+            strength = (volume_strength * 0.4 + price_bounce * 0.3 + prev_candles_strength * 0.3)
+            return min(max(strength, 0), 1)  # Normalize between 0 and 1
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating PDL strength: {str(e)}")
+            return 0.0
+
+    def _calculate_pdh_strength(self, df: pd.DataFrame, i: int) -> float:
+        """Calculate Previous Day High (PDH) strength"""
+        try:
+            # Volume component
+            volume_strength = df['volume'].iloc[i] / df['Volume_MA'].iloc[i]
+            
+            # Price rejection component
+            price_rejection = (df['high'].iloc[i] - df['close'].iloc[i]) / df['high'].iloc[i]
+            
+            # Previous candles confirmation
+            prev_candles_strength = 0
+            if i >= 3:
+                higher_highs = sum(1 for j in range(i-3, i) if df['high'].iloc[j] < df['high'].iloc[i])
+                prev_candles_strength = higher_highs / 3
+            
+            # Combine components
+            strength = (volume_strength * 0.4 + price_rejection * 0.3 + prev_candles_strength * 0.3)
+            return min(max(strength, 0), 1)  # Normalize between 0 and 1
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating PDH strength: {str(e)}")
+            return 0.0
+
+    def identify_fair_value_gaps(self, df: pd.DataFrame, timeframe: str) -> List[Dict]:
+        """Identify Fair Value Gaps (FVG) in the market structure"""
+        fvgs = []
+        try:
+            for i in range(1, len(df)-1):
+                # Bullish FVG
+                if df['low'].iloc[i+1] > df['high'].iloc[i-1]:
+                    gap_size = df['low'].iloc[i+1] - df['high'].iloc[i-1]
+                    if gap_size > df['close'].iloc[i] * 0.0002:  # Minimum gap size threshold
+                        fvg = {
+                            'type': 'bullish',
+                            'timestamp': df.index[i],
+                            'upper_price': df['low'].iloc[i+1],
+                            'lower_price': df['high'].iloc[i-1],
+                            'gap_size': gap_size,
+                            'timeframe': timeframe
+                        }
+                        fvgs.append(fvg)
+                        self.logger.debug(f"Found bullish FVG at {df.index[i]} in {timeframe}")
+                
+                # Bearish FVG
+                if df['high'].iloc[i+1] < df['low'].iloc[i-1]:
+                    gap_size = df['low'].iloc[i-1] - df['high'].iloc[i+1]
+                    if gap_size > df['close'].iloc[i] * 0.0002:  # Minimum gap size threshold
+                        fvg = {
+                            'type': 'bearish',
+                            'timestamp': df.index[i],
+                            'upper_price': df['low'].iloc[i-1],
+                            'lower_price': df['high'].iloc[i+1],
+                            'gap_size': gap_size,
+                            'timeframe': timeframe
+                        }
+                        fvgs.append(fvg)
+                        self.logger.debug(f"Found bearish FVG at {df.index[i]} in {timeframe}")
+            
+            return fvgs
+            
+        except Exception as e:
+            self.logger.error(f"Error identifying FVGs: {str(e)}")
+            return []
+
+    def identify_liquidity_levels(self, df: pd.DataFrame, timeframe: str) -> List[Dict]:
+        """Identify liquidity levels in the market structure"""
+        liquidity_levels = []
+        try:
+            # Calculate swing highs and lows
+            for i in range(2, len(df)-2):
+                # Swing high
+                if (df['high'].iloc[i] > df['high'].iloc[i-1] and 
+                    df['high'].iloc[i] > df['high'].iloc[i-2] and
+                    df['high'].iloc[i] > df['high'].iloc[i+1] and
+                    df['high'].iloc[i] > df['high'].iloc[i+2]):
+                    
+                    # Check volume confirmation
+                    if df['volume'].iloc[i] > df['Volume_MA'].iloc[i] * 1.2:
+                        level = {
+                            'type': 'resistance',
+                            'timestamp': df.index[i],
+                            'price': df['high'].iloc[i],
+                            'volume': df['volume'].iloc[i],
+                            'strength': self._calculate_liquidity_strength(df, i, 'high'),
+                            'timeframe': timeframe
+                        }
+                        liquidity_levels.append(level)
+                        self.logger.debug(f"Found resistance liquidity level at {df.index[i]} in {timeframe}")
+                
+                # Swing low
+                if (df['low'].iloc[i] < df['low'].iloc[i-1] and 
+                    df['low'].iloc[i] < df['low'].iloc[i-2] and
+                    df['low'].iloc[i] < df['low'].iloc[i+1] and
+                    df['low'].iloc[i] < df['low'].iloc[i+2]):
+                    
+                    # Check volume confirmation
+                    if df['volume'].iloc[i] > df['Volume_MA'].iloc[i] * 1.2:
+                        level = {
+                            'type': 'support',
+                            'timestamp': df.index[i],
+                            'price': df['low'].iloc[i],
+                            'volume': df['volume'].iloc[i],
+                            'strength': self._calculate_liquidity_strength(df, i, 'low'),
+                            'timeframe': timeframe
+                        }
+                        liquidity_levels.append(level)
+                        self.logger.debug(f"Found support liquidity level at {df.index[i]} in {timeframe}")
+            
+            return liquidity_levels
+            
+        except Exception as e:
+            self.logger.error(f"Error identifying liquidity levels: {str(e)}")
+            return []
+
+    def _calculate_liquidity_strength(self, df: pd.DataFrame, i: int, level_type: str) -> float:
+        """Calculate the strength of a liquidity level"""
+        try:
+            # Volume component
+            volume_strength = df['volume'].iloc[i] / df['Volume_MA'].iloc[i]
+            
+            # Price rejection component
+            if level_type == 'high':
+                rejection = (df['high'].iloc[i] - df['close'].iloc[i]) / (df['high'].iloc[i] - df['low'].iloc[i])
+            else:  # low
+                rejection = (df['close'].iloc[i] - df['low'].iloc[i]) / (df['high'].iloc[i] - df['low'].iloc[i])
+            
+            # Previous touches component
+            touches = 0
+            look_back = 10
+            start_idx = max(0, i-look_back)
+            price_level = df['high'].iloc[i] if level_type == 'high' else df['low'].iloc[i]
+            price_threshold = price_level * 0.0005  # 0.05% threshold
+            
+            for j in range(start_idx, i):
+                if level_type == 'high':
+                    if abs(df['high'].iloc[j] - price_level) <= price_threshold:
+                        touches += 1
+                else:
+                    if abs(df['low'].iloc[j] - price_level) <= price_threshold:
+                        touches += 1
+            
+            touches_strength = min(touches / 3, 1)  # Normalize touches (max 3 touches for full strength)
+            
+            # Combine components
+            strength = (volume_strength * 0.4 + rejection * 0.3 + touches_strength * 0.3)
+            return min(max(strength, 0), 1)  # Normalize between 0 and 1
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating liquidity level strength: {str(e)}")
+            return 0.0 
