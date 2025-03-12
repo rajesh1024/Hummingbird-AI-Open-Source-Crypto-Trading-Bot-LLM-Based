@@ -2,10 +2,12 @@ from datetime import datetime
 from typing import List, Optional, Dict
 from sqlalchemy.orm import Session
 from src.data.models import Position, PositionStatus, PositionType, ExitSignal, MarketStructureData
+import logging
 
 class PositionManager:
     def __init__(self, db: Session):
         self.db = db
+        self.logger = logging.getLogger(__name__)
     
     def create_position(self,
                        symbol: str,
@@ -91,64 +93,91 @@ class PositionManager:
                         position_id: int,
                         new_stop_loss: float) -> Optional[Position]:
         """Adjust stop loss for a position"""
-        position = self.db.get_position_history(position_id)
-        if not position:
+        try:
+            position = self.db.query(Position).filter(Position.id == position_id).first()
+            if not position:
+                self.logger.error(f"Position {position_id} not found")
+                return None
+            
+            # Validate new stop loss
+            if position.position_type == PositionType.LONG:
+                if new_stop_loss >= position.current_price:
+                    self.logger.warning(f"Invalid stop loss for LONG position: {new_stop_loss} >= {position.current_price}")
+                    return None
+            else:  # SHORT
+                if new_stop_loss <= position.current_price:
+                    self.logger.warning(f"Invalid stop loss for SHORT position: {new_stop_loss} <= {position.current_price}")
+                    return None
+            
+            # Update stop loss
+            position.stop_loss = new_stop_loss
+            position.updated_at = datetime.utcnow()
+            
+            self.db.commit()
+            self.logger.info(f"Successfully updated stop loss for position {position_id} to {new_stop_loss}")
+            return position
+            
+        except Exception as e:
+            self.logger.error(f"Error adjusting stop loss: {str(e)}")
+            self.db.rollback()
             return None
-        
-        position_obj = position['position']
-        
-        # Validate new stop loss
-        if position_obj.position_type == PositionType.LONG:
-            if new_stop_loss >= position_obj.current_price:
-                return None
-        else:  # SHORT
-            if new_stop_loss <= position_obj.current_price:
-                return None
-        
-        return self.db.update_position(position_id, {'stop_loss': new_stop_loss})
     
     def adjust_take_profit(self,
                           position_id: int,
                           new_take_profit: float) -> Optional[Position]:
         """Adjust take profit for a position"""
-        position = self.db.get_position_history(position_id)
-        if not position:
+        try:
+            position = self.db.query(Position).filter(Position.id == position_id).first()
+            if not position:
+                self.logger.error(f"Position {position_id} not found")
+                return None
+            
+            # Validate new take profit
+            if position.position_type == PositionType.LONG:
+                if new_take_profit <= position.current_price:
+                    self.logger.warning(f"Invalid take profit for LONG position: {new_take_profit} <= {position.current_price}")
+                    return None
+            else:  # SHORT
+                if new_take_profit >= position.current_price:
+                    self.logger.warning(f"Invalid take profit for SHORT position: {new_take_profit} >= {position.current_price}")
+                    return None
+            
+            # Update take profit
+            position.take_profit = new_take_profit
+            position.updated_at = datetime.utcnow()
+            
+            self.db.commit()
+            self.logger.info(f"Successfully updated take profit for position {position_id} to {new_take_profit}")
+            return position
+            
+        except Exception as e:
+            self.logger.error(f"Error adjusting take profit: {str(e)}")
+            self.db.rollback()
             return None
-        
-        position_obj = position['position']
-        
-        # Validate new take profit
-        if position_obj.position_type == PositionType.LONG:
-            if new_take_profit <= position_obj.current_price:
-                return None
-        else:  # SHORT
-            if new_take_profit >= position_obj.current_price:
-                return None
-        
-        return self.db.update_position(position_id, {'take_profit': new_take_profit})
     
     def update_position_with_analysis(self,
                                   position_id: int,
                                   signal: Dict,
-                                  market_structure: MarketStructureData) -> Optional[Position]:
+                                  market_structure: Optional[MarketStructureData] = None) -> Optional[Position]:
         """Update position with model's analysis and recommendations"""
         try:
             position = self.db.query(Position).filter(Position.id == position_id).first()
             if not position:
+                self.logger.error(f"Position {position_id} not found")
                 return None
             
             # Update position with model's analysis
             position.last_analysis_time = datetime.utcnow()
             position.model_confidence = signal.get('confidence', 0.0)
             position.analysis_reasoning = signal.get('reasoning', '')
-            position.risk_reward_ratio = signal['position_management'].get('risk_reward_ratio', 0.0)
+            position.risk_reward_ratio = signal.get('position_management', {}).get('risk_reward_ratio', 0.0)
             
             # Store adjustment history
             adjustment = {
                 'timestamp': datetime.utcnow().isoformat(),
-                'action': signal['position_management'].get('action', 'MAINTAIN'),
-                'stop_loss_adjustment': signal['position_management'].get('stop_loss_adjustment', ''),
-                'take_profit_adjustment': signal['position_management'].get('take_profit_adjustment', ''),
+                'action': signal.get('position_management', {}).get('action', 'MAINTAIN'),
+                'stop_loss_adjustment': signal.get('position_management', {}).get('stop_loss_adjustment', ''),
+                'take_profit_adjustment': signal.get('position_management', {}).get('take_profit_adjustment', ''),
                 'confidence': signal.get('confidence', 0.0),
                 'reasoning': signal.get('reasoning', '')
             }
@@ -161,15 +190,20 @@ class PositionManager:
             position.last_adjustment_reason = f"{adjustment['action']}: {adjustment['reasoning']}"
             
             # Calculate and update position strength
-            position.position_strength = self._calculate_position_strength(position, market_structure)
+            if market_structure is not None:
+                position.position_strength = self._calculate_position_strength(position, market_structure)
+            else:
+                # If no market structure data, use model confidence as base strength
+                position.position_strength = position.model_confidence
             
             self.db.commit()
+            self.logger.info(f"Successfully updated position {position_id} with analysis")
             return position
             
         except Exception as e:
             self.logger.error(f"Error updating position with analysis: {str(e)}")
             self.db.rollback()
-            raise
+            return None
 
     def _calculate_position_strength(self, position: Position, market_structure: MarketStructureData) -> float:
         """Calculate position strength based on market structure and model confidence"""
@@ -183,24 +217,26 @@ class PositionManager:
             elif position.risk_reward_ratio < 1.0:
                 strength *= 0.8
             
-            # Adjust based on market structure
-            if position.position_type == PositionType.LONG:
-                if market_structure.structure_type == MarketStructure.BULLISH:
-                    strength *= 1.2
-                elif market_structure.structure_type == MarketStructure.BEARISH:
-                    strength *= 0.8
-            else:  # SHORT position
-                if market_structure.structure_type == MarketStructure.BEARISH:
-                    strength *= 1.2
-                elif market_structure.structure_type == MarketStructure.BULLISH:
-                    strength *= 0.8
+            # Adjust based on market structure if available
+            if hasattr(market_structure, 'structure_type'):
+                if position.position_type == PositionType.LONG:
+                    if market_structure.structure_type == MarketStructure.BULLISH:
+                        strength *= 1.2
+                    elif market_structure.structure_type == MarketStructure.BEARISH:
+                        strength *= 0.8
+                else:  # SHORT position
+                    if market_structure.structure_type == MarketStructure.BEARISH:
+                        strength *= 1.2
+                    elif market_structure.structure_type == MarketStructure.BULLISH:
+                        strength *= 0.8
             
             # Cap strength between 0 and 1
             return min(max(strength, 0.0), 1.0)
             
         except Exception as e:
             self.logger.error(f"Error calculating position strength: {str(e)}")
-            return 0.0
+            # Return model confidence as fallback
+            return position.model_confidence
 
     def create_exit_signal(self,
                           position_id: int,

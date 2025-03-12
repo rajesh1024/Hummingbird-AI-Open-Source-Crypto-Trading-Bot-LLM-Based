@@ -335,7 +335,8 @@ class Hummingbird:
                     
                     # Debug: Print market context
                     console.print("\n[bold cyan]Debug: Market Context being sent to LLM:[/bold cyan]")
-                    console.print(market_context)
+                    # console.print(market_context)
+                    console.print(market_context['active_positions'])
                     
                     # Get active positions for context
                     active_positions = self.position_manager.get_active_positions()
@@ -343,6 +344,7 @@ class Hummingbird:
                     for pos in active_positions:
                         console.print(f"Position ID: {pos.id}, Type: {pos.position_type}, Status: {pos.status}")
                     
+
                     # Generate signal
                     signal = self.llm_analyzer.generate_signal(market_context)
                     
@@ -579,6 +581,8 @@ def main():
             model_name=args.model,  # Use the model specified in command line args
             technical_analyzer=hummingbird.technical_analyzer
         )
+        # Reinitialize position manager
+        hummingbird.llm_analyzer.set_position_manager(hummingbird.position_manager, hummingbird.db)
         
         hummingbird.run()
     except Exception as e:

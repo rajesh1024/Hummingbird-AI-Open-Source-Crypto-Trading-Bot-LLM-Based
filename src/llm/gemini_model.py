@@ -32,15 +32,15 @@ class GeminiModel:
         
         try:
             # List available models and verify model name
-            console.print("[bold cyan]Debug: Listing available models...[/bold cyan]")
-            available_models = [m.name for m in genai.list_models()]
-            console.print(f"[cyan]Available models: {available_models}[/cyan]")
+            # console.print("[bold cyan]Debug: Listing available models...[/bold cyan]")
+            # available_models = [m.name for m in genai.list_models()]
+            # console.print(f"[cyan]Available models: {available_models}[/cyan]")
             
             # Check if model_name is available, if not use gemini-pro
-            if model_name not in available_models:
-                console.print(f"[yellow]Warning: Model {model_name} not found. Falling back to gemini-pro[/yellow]")
-                model_name = "gemini-1.5-flash"
-            
+            # if model_name not in available_models:
+            #     console.print(f"[yellow]Warning: Model {model_name} not found. Falling back to gemini-pro[/yellow]")
+            #     model_name = "gemini-1.5-flash"
+            model_name = "gemini-1.5-flash"
             self.model_name = model_name
             console.print(f"[bold cyan]Debug: Using model: {self.model_name}[/bold cyan]")
             
@@ -85,8 +85,8 @@ class GeminiModel:
             prompt = self._format_prompt(market_context)
             
             # Debug: Print the formatted prompt
-            console.print("\n[bold cyan]Debug: Formatted Prompt:[/bold cyan]")
-            console.print(prompt)
+            # console.print("\n[bold cyan]Debug: Formatted Prompt:[/bold cyan]")
+            # console.print(prompt)
             
             # Simple generation config
             generation_config = {
@@ -99,35 +99,46 @@ class GeminiModel:
             console.print("\n[bold cyan]Debug: Generating response...[/bold cyan]")
             response = self.model.generate_content(prompt)
             
+            # Debug: Print raw response object
+            # console.print("\n[bold cyan]Debug: Raw response object:[/bold cyan]")
+            # console.print(f"Response type: {type(response)}")
+            # console.print(f"Response attributes: {dir(response)}")
+            
             if not response:
                 console.print("[bold red]Error: No response generated[/bold red]")
                 return self._get_default_response()
-                
-            console.print("\n[bold cyan]Debug: Raw response:[/bold cyan]")
-            console.print(response.text)
+            
+            # Debug: Print raw response text
+            # console.print("\n[bold cyan]Debug: Raw response text:[/bold cyan]")
+            # console.print(response.text)
             
             try:
                 # Try to parse JSON directly
                 parsed = json.loads(response.text)
                 console.print("\n[bold green]Successfully parsed JSON response[/bold green]")
                 return self._validate_response(parsed)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                console.print(f"\n[yellow]JSON parse error: {str(e)}[/yellow]")
                 # Try to extract JSON from text
                 import re
                 json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
                 if json_match:
                     try:
-                        parsed = json.loads(json_match.group())
-                        console.print("\n[bold yellow]Successfully extracted and parsed JSON[/bold yellow]")
+                        json_str = json_match.group()
+                        # console.print(f"\n[cyan]Extracted JSON string:[/cyan]\n{json_str}")
+                        parsed = json.loads(json_str)
+                        # console.print("\n[bold yellow]Successfully extracted and parsed JSON[/bold yellow]")
                         return self._validate_response(parsed)
-                    except:
-                        pass
+                    except Exception as extract_error:
+                        console.print(f"\n[red]Error extracting JSON: {str(extract_error)}[/red]")
                 
                 console.print("[bold red]Failed to parse response as JSON[/bold red]")
                 return self._get_default_response()
                 
         except Exception as e:
             console.print(f"[bold red]Error: {str(e)}[/bold red]")
+            import traceback
+            console.print(f"[bold red]Traceback:\n{traceback.format_exc()}[/bold red]")
             return self._get_default_response()
 
     def _get_default_response(self) -> Dict:
@@ -144,26 +155,36 @@ class GeminiModel:
     def _validate_response(self, response: Dict) -> Dict:
         """Validate the response from the model"""
         try:
+            # Debug: Print response before validation
+            # console.print("\n[bold cyan]Debug: Validating response:[/bold cyan]")
+            # console.print(response)
+            
             # Basic structure validation
             required_fields = ['signal', 'confidence', 'reasoning', 'entry_price', 'stop_loss', 'take_profit']
-            if not all(field in response for field in required_fields):
-                raise ValueError(f"Missing required fields: {[f for f in required_fields if f not in response]}")
+            missing_fields = [f for f in required_fields if f not in response]
+            if missing_fields:
+                console.print(f"[yellow]Warning: Missing required fields: {missing_fields}[/yellow]")
+                return self._get_default_response()
             
             # Signal validation
             if response['signal'] not in ['BUY', 'SELL', 'HOLD']:
-                raise ValueError(f"Invalid signal: {response['signal']}")
-            
-            # Let confidence pass through without validation
+                console.print(f"[yellow]Warning: Invalid signal: {response['signal']}[/yellow]")
+                response['signal'] = 'HOLD'
             
             # Price validations
             for field in ['entry_price', 'stop_loss', 'take_profit']:
                 if not isinstance(response[field], (int, float)):
-                    response[field] = float(response[field])
+                    try:
+                        response[field] = float(response[field])
+                    except (ValueError, TypeError):
+                        console.print(f"[yellow]Warning: Invalid {field}: {response[field]}[/yellow]")
+                        response[field] = 0.0
             
+            console.print("[bold green]Response validation successful[/bold green]")
             return response
             
         except Exception as e:
-            self.logger.error(f"Error validating response: {str(e)}")
+            console.print(f"[bold red]Error validating response: {str(e)}[/bold red]")
             return self._get_default_response()
 
     def _format_prompt(self, market_context: dict) -> str:
@@ -173,6 +194,8 @@ class GeminiModel:
             current_price = market_context.get('current_price', 0)
             technical_indicators = market_context.get('technical_indicators', {})
             active_positions = market_context.get('active_positions', [])
+            market_data = market_context.get('market_data', {})
+            analysis = market_context.get('analysis', [])
             
             # Create base market context
             prompt = f"""You are a cryptocurrency trading analyst. Analyze the market data and provide a trading signal in STRICT JSON format.
@@ -180,12 +203,11 @@ class GeminiModel:
                     CURRENT MARKET CONDITIONS:
                     Current Price: ${current_price}
 
+                    MARKET ANALYSIS:
+                    {chr(10).join(analysis)}
+
                     TECHNICAL INDICATORS:
-                    RSI: {technical_indicators.get('RSI', 'N/A')}
-                    MACD: {technical_indicators.get('MACD', 'N/A')}
-                    MACD Signal: {technical_indicators.get('MACD_Signal', 'N/A')}
-                    EMA_8: {technical_indicators.get('EMA_8', 'N/A')}
-                    EMA_21: {technical_indicators.get('EMA_21', 'N/A')}
+                    {chr(10).join([f"{name}: {value}" for name, value in technical_indicators.items()])}
                     """
 
             # Add active positions if they exist
