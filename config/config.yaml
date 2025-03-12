@@ -152,7 +152,7 @@ Always provide detailed reasoning for your signal generation, including:
 data:
   source: "binance"
   historical_data_days: 7  # Reduced for scalping to focus on recent data
-  update_interval: 10  # Changed from 20 to 60 seconds
+  update_interval: 60  # Changed from 20 to 60 seconds
   rate_limit: true
   min_data_points: 1000
   binance:
