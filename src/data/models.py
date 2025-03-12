@@ -37,6 +37,15 @@ class Position(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
+    # New fields for enhanced position management
+    risk_reward_ratio = Column(Float, default=0.0)
+    last_analysis_time = Column(DateTime)
+    position_strength = Column(Float, default=0.0)
+    last_adjustment_reason = Column(String)
+    adjustment_history = Column(JSON, default=list)  # Store history of adjustments
+    model_confidence = Column(Float, default=0.0)
+    analysis_reasoning = Column(String)
+    
     # Relationships
     market_structures = relationship("MarketStructureData", back_populates="position")
     exit_signals = relationship("ExitSignal", back_populates="position")
@@ -108,9 +117,11 @@ class ExitSignal(Base):
     
     id = Column(Integer, primary_key=True)
     position_id = Column(Integer, ForeignKey('positions.id'))
-    signal_type = Column(String, nullable=False)  # 'structure_shift', 'strength_loss', 'stop_loss', 'take_profit'
+    signal_type = Column(String, nullable=False)  # 'structure_shift', 'strength_loss', 'stop_loss', 'take_profit', 'model_recommendation'
     price = Column(Float, nullable=False)
     reason = Column(String, nullable=False)
+    confidence = Column(Float, default=0.0)  # Model's confidence in the exit signal
+    model_analysis = Column(String)  # Detailed model analysis for the exit
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships

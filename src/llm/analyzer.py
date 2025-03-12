@@ -29,6 +29,8 @@ class LLMAnalyzer:
         self.model_config = model_config
         self.model_name = model_name
         self.technical_analyzer = technical_analyzer
+        self.position_manager = None  # Will be set after initialization
+        self.db = None  # Will be set after initialization
         self.logger = logging.getLogger(__name__)
         self.model = self._load_model()
         self.confidence_threshold = model_config.get('confidence_threshold', 0.3)  # Get from config
@@ -243,55 +245,215 @@ class LLMAnalyzer:
         
         return "\n".join(context)
     
-    def generate_signal(
-        self,
-        market_context: str,
-        confidence_threshold: Optional[float] = None
-    ) -> Dict:
-        """Generate a trading signal based on market data"""
+    def set_position_manager(self, position_manager, db):
+        """Set the position manager and database connection"""
+        self.position_manager = position_manager
+        self.db = db
+
+    def generate_signal(self, market_context: dict, confidence_threshold: float = None) -> dict:
+        """Generate trading signal and manage positions based on model's recommendations"""
         try:
-            # Skip confidence threshold check
-            threshold = 0.0  # Always allow signals through
+            # Ensure market_context is a dictionary
+            if isinstance(market_context, str):
+                try:
+                    market_context = json.loads(market_context)
+                except json.JSONDecodeError:
+                    console.print("[bold red]Error: market_context is a string and could not be parsed as JSON[/bold red]")
+                    return None
+            elif not isinstance(market_context, dict):
+                console.print(f"[bold red]Error: market_context must be a dictionary, got {type(market_context)}[/bold red]")
+                return None
+                
+            # Create a copy of market_context to avoid modifying the original
+            context = market_context.copy()
             
-            # Add debug logging
-            console.print("[bold cyan]Debug: Preparing to call Gemini model[/bold cyan]")
-            console.print(f"[bold cyan]Debug: Market Context Length: {len(market_context)}[/bold cyan]")
-            console.print("[bold cyan]Debug: First 500 chars of context:[/bold cyan]\n" + market_context[:500])
+            # Use provided confidence threshold or fall back to default
+            if confidence_threshold is not None:
+                self.confidence_threshold = confidence_threshold
             
-            # Get response from model using the prepared market context
-            console.print("[bold cyan]Debug: Calling Gemini model generate_response[/bold cyan]")
-            response = self.model.generate_response(market_context)
-            console.print(f"[bold cyan]Debug: Got response from Gemini: {response}[/bold cyan]")
+            # Get current active positions if position manager is initialized
+            active_positions = []
+            if self.position_manager is not None:
+                try:
+                    active_positions = self.position_manager.get_active_positions()
+                    console.print("\n[bold cyan]Debug: Found active positions:[/bold cyan]")
+                    for pos in active_positions:
+                        self._display_position(pos, context.get('current_price', 0))
+                except Exception as e:
+                    console.print(f"[yellow]Warning: Could not fetch active positions: {str(e)}[/yellow]")
             
-            # Validate response
-            if not response or not isinstance(response, dict):
-                self.logger.error("Invalid response from model")
-                return self._get_default_signal()
+            # Add positions to market context if they exist
+            if active_positions:
+                context['active_positions'] = active_positions
+                console.print("\n[bold cyan]Debug: Added active positions to market context[/bold cyan]")
+            else:
+                context['active_positions'] = []
+                console.print("\n[bold cyan]Debug: No active positions found[/bold cyan]")
             
-            # Validate required fields
-            required_fields = ["signal", "confidence", "reasoning", "entry_price", "stop_loss", "take_profit"]
-            if not all(field in response for field in required_fields):
-                self.logger.error(f"Missing required fields in response: {response}")
-                return self._get_default_signal()
+            # Generate signal from model with position context
+            console.print("\n[bold cyan]Debug: Generating signal from model...[/bold cyan]")
+            signal = self._generate_model_signal(context)
             
-            # No need to validate confidence - let it pass through
-            return response
+            # Debug: Print raw signal response
+            console.print("\n[bold cyan]Debug: Raw Signal Response:[/bold cyan]")
+            console.print(signal)
+            
+            # Debug: Print signal details
+            console.print("\n[bold cyan]Debug: Generated Signal Details:[/bold cyan]")
+            if signal:
+                # Create a table for better visualization
+                table = Table(title="Signal Analysis")
+                table.add_column("Parameter", style="cyan")
+                table.add_column("Value", style="green")
+                
+                table.add_row("Signal Type", str(signal.get('signal', 'N/A')))
+                table.add_row("Confidence", f"{signal.get('confidence', 0):.2f}")
+                table.add_row("Entry Price", f"{signal.get('entry_price', 0):.2f}")
+                table.add_row("Stop Loss", f"{signal.get('stop_loss', 0):.2f}")
+                table.add_row("Take Profit", f"{signal.get('take_profit', 0):.2f}")
+                table.add_row("Reasoning", str(signal.get('reasoning', 'N/A')))
+                
+                if 'position_management' in signal:
+                    pm = signal['position_management']
+                    table.add_row("Position Action", str(pm.get('action', 'N/A')))
+                    table.add_row("Risk:Reward", f"{pm.get('risk_reward_ratio', 0):.2f}")
+                
+                console.print(table)
+                
+                # Handle position management based on signal
+                current_price = context.get('current_price', 0)
+                
+                if active_positions:
+                    # If we have active positions, manage them based on the signal
+                    self._handle_position_management(active_positions, signal, current_price)
+                elif signal.get('confidence', 0) >= self.confidence_threshold:
+                    # If no active positions and signal is strong enough, create new position
+                    if self.position_manager is not None:
+                        self._create_new_position(signal, context)
+                        console.print(f"\n[bold green]Created new position based on {signal['signal']} signal[/bold green]")
+                    else:
+                        console.print("\n[yellow]Warning: Position manager not initialized, skipping position creation[/yellow]")
+            else:
+                console.print("[bold red]No signal generated[/bold red]")
+                return None
+            
+            return signal
             
         except Exception as e:
             self.logger.error(f"Error generating signal: {str(e)}")
-            console.print(f"[bold red]Debug: Exception in generate_signal: {str(e)}[/bold red]")
-            return self._get_default_signal()
-    
-    def _get_default_signal(self) -> Dict:
-        """Return a default signal in case of errors"""
-        return {
-            "signal": "HOLD",
-            "confidence": 0.0,  # Changed from 0.5 to 0.0
-            "reasoning": "Error generating signal",
-            "entry_price": 0,
-            "stop_loss": 0,
-            "take_profit": 0
-        }
+            console.print(f"[bold red]Error generating signal: {str(e)}[/bold red]")
+            import traceback
+            console.print(f"[bold red]Traceback:\n{traceback.format_exc()}[/bold red]")
+            return None
+
+    def _handle_position_management(self, active_positions, signal, current_price):
+        """Handle position management based on model's recommendations"""
+        try:
+            position_management = signal.get('position_management', {})
+            action = position_management.get('action', 'MAINTAIN')
+            
+            for position in active_positions:
+                if action == 'CLOSE':
+                    # Close position if recommended
+                    self.logger.info(f"Closing position {position.id} based on model recommendation")
+                    self.position_manager.close_position(position.id)
+                    
+                elif action == 'UPDATE':
+                    # Update stop loss and take profit based on model's recommendations
+                    self._update_position_levels(position, signal, position_management)
+                    
+                # Update current price regardless of action
+                position.current_price = current_price
+                self.db.commit()
+                
+        except Exception as e:
+            self.logger.error(f"Error in position management: {str(e)}")
+            self.db.rollback()
+
+    def _update_position_levels(self, position, signal, position_management):
+        """Update position levels based on model's recommendations"""
+        try:
+            # Get adjustments from position management
+            stop_loss_adjustment = position_management.get('stop_loss_adjustment')
+            take_profit_adjustment = position_management.get('take_profit_adjustment')
+            
+            if position.position_type == "LONG":
+                # For long positions
+                if stop_loss_adjustment and signal['stop_loss'] > position.stop_loss:
+                    self.logger.info(f"Updating stop loss for position {position.id}: {stop_loss_adjustment}")
+                    self.position_manager.adjust_stop_loss(position.id, signal['stop_loss'])
+                    
+                if take_profit_adjustment and signal['take_profit'] > position.take_profit:
+                    self.logger.info(f"Updating take profit for position {position.id}: {take_profit_adjustment}")
+                    self.position_manager.adjust_take_profit(position.id, signal['take_profit'])
+                    
+            else:  # SHORT position
+                # For short positions
+                if stop_loss_adjustment and signal['stop_loss'] < position.stop_loss:
+                    self.logger.info(f"Updating stop loss for position {position.id}: {stop_loss_adjustment}")
+                    self.position_manager.adjust_stop_loss(position.id, signal['stop_loss'])
+                    
+                if take_profit_adjustment and signal['take_profit'] < position.take_profit:
+                    self.logger.info(f"Updating take profit for position {position.id}: {take_profit_adjustment}")
+                    self.position_manager.adjust_take_profit(position.id, signal['take_profit'])
+                    
+        except Exception as e:
+            self.logger.error(f"Error updating position levels: {str(e)}")
+            raise
+
+    def _create_new_position(self, signal, market_context):
+        """Create a new position based on signal"""
+        try:
+            position_type = "LONG" if signal['signal'] == "BUY" else "SHORT"
+            
+            # Validate risk-reward ratio from model's recommendation
+            risk_reward_ratio = signal['position_management'].get('risk_reward_ratio', 0)
+            min_risk_reward = self.model_config.get('min_risk_reward_ratio', 2.0)
+            
+            if risk_reward_ratio >= min_risk_reward:
+                # Create new position with model's recommended levels
+                self.position_manager.create_position(
+                    symbol=market_context['symbol'],
+                    position_type=position_type,
+                    entry_price=signal['entry_price'],
+                    stop_loss=signal['stop_loss'],
+                    take_profit=signal['take_profit'],
+                    size=market_context['config']['position']['risk_per_trade'],
+                    timeframe=market_context['timeframe']
+                )
+                self.logger.info(f"Created new {position_type} position with R:R ratio of {risk_reward_ratio}")
+            else:
+                self.logger.warning(f"Skipping position creation: Risk-reward ratio {risk_reward_ratio} below minimum {min_risk_reward}")
+                
+        except Exception as e:
+            self.logger.error(f"Error creating position: {str(e)}")
+            self.db.rollback()
+
+    def _generate_model_signal(self, market_context: dict) -> dict:
+        """Generate raw signal from the model"""
+        try:
+            console.print("\n[bold cyan]Debug: Entering _generate_model_signal[/bold cyan]")
+            console.print(f"[cyan]Model name: {self.model_name}[/cyan]")
+            
+            if self.model_name == "gemini":
+                console.print("[cyan]Using Gemini model for generation...[/cyan]")
+                response = self.model.generate_response(market_context)
+                console.print("\n[bold cyan]Debug: Response from Gemini model:[/bold cyan]")
+                console.print(response)
+                return response
+            else:
+                console.print("[cyan]Using local model for generation...[/cyan]")
+                response = self.model.generate_response(market_context)
+                console.print("\n[bold cyan]Debug: Response from local model:[/bold cyan]")
+                console.print(response)
+                return response
+                
+        except Exception as e:
+            self.logger.error(f"Error generating model signal: {str(e)}")
+            console.print(f"[bold red]Error in _generate_model_signal: {str(e)}[/bold red]")
+            import traceback
+            console.print(f"[bold red]Traceback:\n{traceback.format_exc()}[/bold red]")
+            return None
     
     def _parse_llm_response(self, response: str) -> Dict:
         """
@@ -356,7 +518,7 @@ class LLMAnalyzer:
             return 'NEUTRAL'  # Default to NEUTRAL for unknown signals
     
     def _display_signal(self, signal_data: Dict[str, Any]) -> None:
-        """Display the trading signal in a formatted table"""
+        """Display the trading signal and position management details"""
         table = Table(title="Trading Signal Analysis")
         table.add_column("Metric", style="cyan")
         table.add_column("Value", style="green")
@@ -370,19 +532,11 @@ class LLMAnalyzer:
         table.add_row("Stop Loss", f"${signal_data['stop_loss']:.2f}")
         table.add_row("Take Profit", f"${signal_data['take_profit']:.2f}")
         
-        # Calculate risk:reward ratio
-        if signal_data["signal"] == "BUY":
-            risk = signal_data["entry_price"] - signal_data["stop_loss"]
-            reward = signal_data["take_profit"] - signal_data["entry_price"]
-            rr_ratio = reward / risk if risk > 0 else 0
-        elif signal_data["signal"] == "SELL":
-            risk = signal_data["stop_loss"] - signal_data["entry_price"]
-            reward = signal_data["entry_price"] - signal_data["take_profit"]
-            rr_ratio = reward / risk if risk > 0 else 0
-        else:
-            rr_ratio = 0
-        
-        table.add_row("Risk:Reward Ratio", f"{rr_ratio:.2f}")
+        # Add position management details
+        if 'position_management' in signal_data:
+            pm = signal_data['position_management']
+            table.add_row("Position Action", pm['action'])
+            table.add_row("Risk:Reward Ratio", f"{pm['risk_reward_ratio']:.2f}")
         
         # Display the table
         console.print(table)
@@ -393,6 +547,41 @@ class LLMAnalyzer:
             title="Signal Reasoning",
             border_style="blue"
         ))
+        
+        # Display position management details in a separate panel
+        if 'position_management' in signal_data:
+            pm = signal_data['position_management']
+            position_details = f"""
+            Stop Loss Adjustment: {pm['stop_loss_adjustment']}
+            Take Profit Adjustment: {pm['take_profit_adjustment']}
+            """
+            console.print(Panel(
+                position_details,
+                title="Position Management Details",
+                border_style="magenta"
+            ))
+    
+    def _display_position(self, position, current_price):
+        """Display position details in a formatted table"""
+        table = Table(title=f"Position {position.id}")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+        
+        # Calculate PnL
+        if position.position_type == "LONG":
+            pnl = (current_price - position.entry_price) / position.entry_price * 100
+        else:
+            pnl = (position.entry_price - current_price) / position.entry_price * 100
+        
+        table.add_row("Type", position.position_type)
+        table.add_row("Status", position.status)
+        table.add_row("Entry Price", f"${position.entry_price:.2f}")
+        table.add_row("Current Price", f"${current_price:.2f}")
+        table.add_row("Stop Loss", f"${position.stop_loss:.2f}")
+        table.add_row("Take Profit", f"${position.take_profit:.2f}")
+        table.add_row("PnL", f"{pnl:.2f}%")
+        
+        console.print(table)
     
     def _determine_trend(self, df: pd.DataFrame) -> str:
         """

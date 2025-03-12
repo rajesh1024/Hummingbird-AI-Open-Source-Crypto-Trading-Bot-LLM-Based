@@ -51,15 +51,19 @@ class Hummingbird:
         Session = sessionmaker(bind=engine)
         self.db = Session()
         
+        # Initialize components
         self.position_manager = PositionManager(self.db)
         self.market_structure = MarketStructureAnalyzer(self.db, self.config)
         self.market_data = MarketData(self.config)
         self.technical_analyzer = TechnicalAnalysis()
+        
+        # Initialize LLM analyzer with position management
         self.llm_analyzer = LLMAnalyzer(
             model_config=self.config['llm'],
             model_name=self.config['llm']['default_model'],
             technical_analyzer=self.technical_analyzer
         )
+        self.llm_analyzer.set_position_manager(self.position_manager, self.db)
         
         # Initialize trading mode and symbol
         self.trading_mode = "swing"
@@ -320,16 +324,32 @@ class Hummingbird:
                 
                 # Generate trading signal using all timeframes
                 if primary_timeframe in market_structure and market_structure[primary_timeframe] is not None:
-                    signal = self.llm_analyzer.generate_signal(
-                        self.llm_analyzer.prepare_market_context(
-                            market_data,
-                            technical_indicators.get(primary_timeframe, {}),  # Use primary timeframe indicators
-                            market_structure[primary_timeframe].order_blocks,  # Use primary timeframe order blocks
-                            market_structure[primary_timeframe].fair_value_gaps,  # Use primary timeframe FVGs
-                            market_structure[primary_timeframe].liquidity_levels  # Use primary timeframe liquidity levels
-                        ),
-                        self.config['llm']['confidence_threshold']
+                    # Prepare market context
+                    market_context = self.llm_analyzer.prepare_market_context(
+                        market_data,
+                        technical_indicators.get(primary_timeframe, {}),
+                        market_structure[primary_timeframe].order_blocks,
+                        market_structure[primary_timeframe].fair_value_gaps,
+                        market_structure[primary_timeframe].liquidity_levels
                     )
+                    
+                    # Debug: Print market context
+                    console.print("\n[bold cyan]Debug: Market Context being sent to LLM:[/bold cyan]")
+                    console.print(market_context)
+                    
+                    # Get active positions for context
+                    active_positions = self.position_manager.get_active_positions()
+                    console.print("\n[bold cyan]Debug: Current Active Positions:[/bold cyan]")
+                    for pos in active_positions:
+                        console.print(f"Position ID: {pos.id}, Type: {pos.position_type}, Status: {pos.status}")
+                    
+                    # Generate signal
+                    signal = self.llm_analyzer.generate_signal(market_context)
+                    
+                    # Debug: Print LLM response
+                    console.print("\n[bold cyan]Debug: LLM Response:[/bold cyan]")
+                    console.print(signal)
+                    
                 else:
                     raise ValueError("Failed to analyze market structure for primary timeframe")
                 
@@ -498,6 +518,44 @@ class Hummingbird:
                     
         except KeyboardInterrupt:
             self.logger.info("Shutting down Hummingbird trading system")
+        finally:
+            self.db.close()
+
+    def run_analysis(self):
+        """Run market analysis and position management"""
+        try:
+            while True:
+                # Get market data
+                market_data = self._get_market_data(self.symbol)
+                
+                # Prepare market context
+                market_context = {
+                    'symbol': self.symbol,
+                    'timeframe': self.config['trading']['modes'][self.trading_mode]['default_timeframe'],
+                    'current_price': market_data['close'].iloc[-1],
+                    'config': self.config,
+                    'market_data': market_data.to_dict('records')
+                }
+                
+                # Generate signal and manage positions
+                signal = self.llm_analyzer.generate_signal(market_context)
+                
+                if signal:
+                    self.logger.info(f"Trading signal: {signal['signal']} with confidence {signal['confidence']:.2%}")
+                    
+                    # Display active positions
+                    active_positions = self.position_manager.get_active_positions()
+                    if active_positions:
+                        for position in active_positions:
+                            self._display_position_status(position)
+                
+                # Wait for next analysis
+                time.sleep(self.config['monitoring']['interval'])
+                
+        except KeyboardInterrupt:
+            self.logger.info("Shutting down...")
+        except Exception as e:
+            self.logger.error(f"Error in analysis loop: {str(e)}")
         finally:
             self.db.close()
 

@@ -57,7 +57,7 @@ trading:
     liquidity_levels: true
 
 llm:
-  default_model: "local"
+  default_model: "gemini"
   api_key: ${GEMINI_API_KEY}
   temperature: 0.8
   max_tokens: 1000
@@ -77,77 +77,11 @@ llm:
       system_prompt: "You are an expert cryptocurrency scalping analyst specializing in Smart Money Concepts (SMC) and technical analysis. Your goal is to identify high-probability trading opportunities in short-term price movements. Generate trading signals when you see clear entry points with good risk-reward ratios. Be proactive in identifying opportunities, but maintain strict risk management. Focus on recent price action, volume, and SMC patterns."
     gemini:
       type: "api"
-      name: "gemini-2.0-flash"
+      name: "gemini-1.5-flash"
       api_key: ${GEMINI_API_KEY}
       max_tokens: 1000
-      temperature: 0.8
-      system_prompt: "You are an expert cryptocurrency scalping analyst specializing in Smart Money Concepts (SMC) and technical analysis. Your goal is to identify high-probability trading opportunities in short-term price movements by analyzing multiple timeframes (1m, 5m, 15m, 1h, 4h).
-
-When analyzing market conditions, follow this structured approach:
-
-1. Multi-timeframe Analysis:
-   - Start with higher timeframes (4h, 1h) to identify overall trend and major SMC levels
-   - Use medium timeframes (15m, 5m) for entry timing and intermediate SMC patterns
-   - Use lower timeframes (1m) for precise entry points and short-term SMC patterns
-
-2. SMC Pattern Analysis:
-   - Order Blocks: Look for institutional order blocks across timeframes
-   - Fair Value Gaps (FVG): Identify gaps that need to be filled
-   - Liquidity Levels: Find key support/resistance levels with high volume
-   - Smart Money Traps: Detect potential liquidity sweeps
-
-3. Signal Generation Rules:
-   - Strong signals (confidence > 0.7):
-     * Multiple timeframe alignment
-     * Clear SMC patterns on 2+ timeframes
-     * Strong volume confirmation
-     * Good risk-reward ratio (1:2 or better)
-   
-   - Moderate signals (confidence > 0.5):
-     * Two timeframe alignment
-     * Clear SMC pattern on primary timeframe
-     * Decent volume confirmation
-     * Risk-reward ratio at least 1:1.5
-   
-   - Weak signals (confidence > 0.3):
-     * Single timeframe alignment
-     * Potential SMC pattern forming
-     * Basic volume confirmation
-     * Risk-reward ratio at least 1:1
-
-4. Entry Conditions:
-   - Price near key SMC level (within 0.5% for scalping)
-   - Technical indicators aligned (RSI, MACD, EMAs)
-   - Volume confirmation on entry timeframe
-   - Clear market structure (trend, support/resistance)
-   - No conflicting signals on higher timeframes
-
-5. Exit Conditions:
-   - Price reaches key SMC level
-   - Structure shift on primary timeframe
-   - Technical indicator divergence
-   - Volume decline
-   - Risk-reward target reached
-
-6. Risk Management:
-   - Stop loss: Place below/above nearest SMC level
-   - Take profit: Use SMC levels for targets
-   - Position size: Based on risk percentage
-   - Maximum loss per trade: 1% of account
-
-Generate BUY/SELL signals when you see at least 2-3 confirming factors from the above criteria. Use HOLD when:
-- No clear directional bias across timeframes
-- Conflicting signals between timeframes
-- Price in a tight range with no clear breakout
-- Risk-reward ratio below 1:1.5
-- No strong SMC levels nearby
-
-Always provide detailed reasoning for your signal generation, including:
-1. Overall market structure
-2. Key SMC patterns identified
-3. Technical indicator alignment
-4. Volume analysis
-5. Risk-reward assessment"
+      temperature: 0.7
+      system_prompt: "You are an expert cryptocurrency scalping analyst specializing in Smart Money Concepts (SMC) and technical analysis. Your goal is to identify high-probability trading opportunities in short-term price movements by analyzing multiple timeframes (1m, 5m, 15m, 1h, 4h)."
 
 data:
   source: "binance"
@@ -227,10 +161,10 @@ technical:
       max_deviation: 0.0001
 
 database:
-  url: postgresql://postgres:postgres@localhost:5432/hummingbird
+  url: postgresql://postgres:postgres@localhost:5432/hummingbird_v2
   host: localhost
   port: 5432
-  name: hummingbird
+  name: hummingbird_v2
   user: postgres
   password: postgres
 

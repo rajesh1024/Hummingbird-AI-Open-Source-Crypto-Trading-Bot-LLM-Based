@@ -125,4 +125,105 @@ class PositionManager:
             if new_take_profit >= position_obj.current_price:
                 return None
         
-        return self.db.update_position(position_id, {'take_profit': new_take_profit}) 
+        return self.db.update_position(position_id, {'take_profit': new_take_profit})
+    
+    def update_position_with_analysis(self,
+                                  position_id: int,
+                                  signal: Dict,
+                                  market_structure: MarketStructureData) -> Optional[Position]:
+        """Update position with model's analysis and recommendations"""
+        try:
+            position = self.db.query(Position).filter(Position.id == position_id).first()
+            if not position:
+                return None
+            
+            # Update position with model's analysis
+            position.last_analysis_time = datetime.utcnow()
+            position.model_confidence = signal.get('confidence', 0.0)
+            position.analysis_reasoning = signal.get('reasoning', '')
+            position.risk_reward_ratio = signal['position_management'].get('risk_reward_ratio', 0.0)
+            
+            # Store adjustment history
+            adjustment = {
+                'timestamp': datetime.utcnow().isoformat(),
+                'action': signal['position_management'].get('action', 'MAINTAIN'),
+                'stop_loss_adjustment': signal['position_management'].get('stop_loss_adjustment', ''),
+                'take_profit_adjustment': signal['position_management'].get('take_profit_adjustment', ''),
+                'confidence': signal.get('confidence', 0.0),
+                'reasoning': signal.get('reasoning', '')
+            }
+            
+            if position.adjustment_history is None:
+                position.adjustment_history = []
+            position.adjustment_history.append(adjustment)
+            
+            # Update last adjustment reason
+            position.last_adjustment_reason = f"{adjustment['action']}: {adjustment['reasoning']}"
+            
+            # Calculate and update position strength
+            position.position_strength = self._calculate_position_strength(position, market_structure)
+            
+            self.db.commit()
+            return position
+            
+        except Exception as e:
+            self.logger.error(f"Error updating position with analysis: {str(e)}")
+            self.db.rollback()
+            raise
+
+    def _calculate_position_strength(self, position: Position, market_structure: MarketStructureData) -> float:
+        """Calculate position strength based on market structure and model confidence"""
+        try:
+            # Base strength starts with model confidence
+            strength = position.model_confidence
+            
+            # Adjust based on risk-reward ratio
+            if position.risk_reward_ratio >= 2.0:
+                strength *= 1.2
+            elif position.risk_reward_ratio < 1.0:
+                strength *= 0.8
+            
+            # Adjust based on market structure
+            if position.position_type == PositionType.LONG:
+                if market_structure.structure_type == MarketStructure.BULLISH:
+                    strength *= 1.2
+                elif market_structure.structure_type == MarketStructure.BEARISH:
+                    strength *= 0.8
+            else:  # SHORT position
+                if market_structure.structure_type == MarketStructure.BEARISH:
+                    strength *= 1.2
+                elif market_structure.structure_type == MarketStructure.BULLISH:
+                    strength *= 0.8
+            
+            # Cap strength between 0 and 1
+            return min(max(strength, 0.0), 1.0)
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating position strength: {str(e)}")
+            return 0.0
+
+    def create_exit_signal(self,
+                          position_id: int,
+                          signal_type: str,
+                          price: float,
+                          reason: str,
+                          confidence: float = 0.0,
+                          model_analysis: str = None) -> Optional[ExitSignal]:
+        """Create a new exit signal with model analysis"""
+        try:
+            exit_signal = ExitSignal(
+                position_id=position_id,
+                signal_type=signal_type,
+                price=price,
+                reason=reason,
+                confidence=confidence,
+                model_analysis=model_analysis
+            )
+            self.db.add(exit_signal)
+            self.db.commit()
+            return exit_signal
+            
+        except Exception as e:
+            self.logger.error(f"Error creating exit signal: {str(e)}")
+            self.db.rollback()
+            return None 
