@@ -1,13 +1,15 @@
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
+import logging
 from ..data.models import OrderBlock, FairValueGap, LiquidityLevel
 
 class SMCPatternDetector:
     def __init__(self, config: Dict):
         self.config = config
+        self.logger = logging.getLogger(__name__)
     
-    def detect_institutional_order_blocks(self, df: pd.DataFrame) -> List[OrderBlock]:
+    def detect_institutional_order_blocks(self, df: pd.DataFrame) -> List[Dict]:
         """Detect institutional order blocks with advanced pattern recognition"""
         order_blocks = []
         
@@ -36,25 +38,28 @@ class SMCPatternDetector:
             try:
                 # Bullish institutional order block
                 if self._is_bullish_institutional_block(df, i):
-                    block = OrderBlock(
-                        block_type='institutional',
-                        price=df['close'].iloc[i],
-                        volume=df['volume'].iloc[i],
-                        strength=self._calculate_institutional_block_strength(df, i, 'bullish')
-                    )
+                    block = {
+                        'block_type': 'BULLISH',
+                        'price': float(df['close'].iloc[i]),
+                        'volume': float(df['volume'].iloc[i]),
+                        'strength': float(self._calculate_institutional_block_strength(df, i, 'bullish')),
+                        'timestamp': str(df.index[i])
+                    }
                     order_blocks.append(block)
                 
                 # Bearish institutional order block
                 if self._is_bearish_institutional_block(df, i):
-                    block = OrderBlock(
-                        block_type='institutional',
-                        price=df['close'].iloc[i],
-                        volume=df['volume'].iloc[i],
-                        strength=self._calculate_institutional_block_strength(df, i, 'bearish')
-                    )
+                    block = {
+                        'block_type': 'BEARISH',
+                        'price': float(df['close'].iloc[i]),
+                        'volume': float(df['volume'].iloc[i]),
+                        'strength': float(self._calculate_institutional_block_strength(df, i, 'bearish')),
+                        'timestamp': str(df.index[i])
+                    }
                     order_blocks.append(block)
+                    
             except Exception as e:
-                self.logger.error(f"Error processing candle at index {i}: {str(e)}")
+                self.logger.error(f"Error processing order block at index {i}: {str(e)}")
                 continue
         
         return order_blocks
@@ -154,32 +159,43 @@ class SMCPatternDetector:
         
         return True
     
-    def detect_fair_value_gaps(self, df: pd.DataFrame) -> List[FairValueGap]:
-        """Detect fair value gaps with advanced pattern recognition"""
-        fvgs = []
+    def detect_fair_value_gaps(self, df: pd.DataFrame) -> List[Dict]:
+        """Detect fair value gaps in price action"""
+        fair_value_gaps = []
         
-        for i in range(1, len(df) - 1):
-            # Bullish FVG
-            if self._is_bullish_fvg(df, i):
-                fvg = FairValueGap(
-                    gap_type='bullish',
-                    upper_price=df['low'].iloc[i],
-                    lower_price=max(df['high'].iloc[i-1], df['high'].iloc[i+1]),
-                    volume=df['volume'].iloc[i]
-                )
-                fvgs.append(fvg)
+        # Validate input data
+        if df is None or df.empty or len(df) < 3:
+            return fair_value_gaps
             
-            # Bearish FVG
-            if self._is_bearish_fvg(df, i):
-                fvg = FairValueGap(
-                    gap_type='bearish',
-                    upper_price=min(df['low'].iloc[i-1], df['low'].iloc[i+1]),
-                    lower_price=df['high'].iloc[i],
-                    volume=df['volume'].iloc[i]
-                )
-                fvgs.append(fvg)
+        for i in range(1, len(df) - 1):
+            try:
+                # Bullish FVG
+                if self._is_bullish_fvg(df, i):
+                    gap = {
+                        'gap_type': 'BULLISH',
+                        'upper_price': float(df['low'].iloc[i+1]),
+                        'lower_price': float(df['high'].iloc[i-1]),
+                        'size': float(df['low'].iloc[i+1] - df['high'].iloc[i-1]),
+                        'timestamp': str(df.index[i])
+                    }
+                    fair_value_gaps.append(gap)
+                
+                # Bearish FVG
+                if self._is_bearish_fvg(df, i):
+                    gap = {
+                        'gap_type': 'BEARISH',
+                        'upper_price': float(df['low'].iloc[i-1]),
+                        'lower_price': float(df['high'].iloc[i+1]),
+                        'size': float(df['low'].iloc[i-1] - df['high'].iloc[i+1]),
+                        'timestamp': str(df.index[i])
+                    }
+                    fair_value_gaps.append(gap)
+                    
+            except Exception as e:
+                self.logger.error(f"Error processing fair value gap at index {i}: {str(e)}")
+                continue
         
-        return fvgs
+        return fair_value_gaps
     
     def _is_bullish_fvg(self, df: pd.DataFrame, index: int) -> bool:
         """Check if a candle forms a bullish fair value gap"""
@@ -217,35 +233,39 @@ class SMCPatternDetector:
         
         return True
     
-    def detect_liquidity_levels(self, df: pd.DataFrame) -> List[LiquidityLevel]:
-        """Detect key liquidity levels with volume profile analysis"""
+    def detect_liquidity_levels(self, df: pd.DataFrame) -> List[Dict]:
+        """Detect liquidity levels (support/resistance) in price action"""
         liquidity_levels = []
         
-        # Calculate volume profile
-        price_bins = pd.qcut(df['close'], q=10)
-        volume_profile = df.groupby(price_bins, observed=True)['volume'].sum()
-        
-        # Identify support levels
-        for i in range(1, len(df) - 1):
-            if self._is_support_level(df, i):
-                level = LiquidityLevel(
-                    level_type='support',
-                    price=df['low'].iloc[i],
-                    volume=df['volume'].iloc[i],
-                    strength=self._calculate_level_strength(df, i, 'support')
-                )
-                liquidity_levels.append(level)
-        
-        # Identify resistance levels
-        for i in range(1, len(df) - 1):
-            if self._is_resistance_level(df, i):
-                level = LiquidityLevel(
-                    level_type='resistance',
-                    price=df['high'].iloc[i],
-                    volume=df['volume'].iloc[i],
-                    strength=self._calculate_level_strength(df, i, 'resistance')
-                )
-                liquidity_levels.append(level)
+        # Validate input data
+        if df is None or df.empty:
+            return liquidity_levels
+            
+        for i in range(2, len(df) - 2):
+            try:
+                # Support level
+                if self._is_support_level(df, i):
+                    level = {
+                        'level_type': 'SUPPORT',
+                        'price': float(df['low'].iloc[i]),
+                        'strength': float(self._calculate_level_strength(df, i, 'support')),
+                        'timestamp': str(df.index[i])
+                    }
+                    liquidity_levels.append(level)
+                
+                # Resistance level
+                if self._is_resistance_level(df, i):
+                    level = {
+                        'level_type': 'RESISTANCE',
+                        'price': float(df['high'].iloc[i]),
+                        'strength': float(self._calculate_level_strength(df, i, 'resistance')),
+                        'timestamp': str(df.index[i])
+                    }
+                    liquidity_levels.append(level)
+                    
+            except Exception as e:
+                self.logger.error(f"Error processing liquidity level at index {i}: {str(e)}")
+                continue
         
         return liquidity_levels
     
@@ -342,4 +362,47 @@ class SMCPatternDetector:
         volume_strength = min(volume / avg_volume, 1.0)
         touch_strength = min(touches / len(df), 1.0)
         
-        return (volume_strength + touch_strength) / 2 
+        return (volume_strength + touch_strength) / 2
+    
+    def analyze_patterns(self, df: pd.DataFrame, timeframe: str) -> Dict:
+        """Analyze all SMC patterns in the market data"""
+        try:
+            # Detect institutional order blocks
+            order_blocks = self.detect_institutional_order_blocks(df)
+            
+            # Detect smart money traps
+            smart_money_traps = self.detect_smart_money_traps(df)
+            
+            # Detect fair value gaps
+            fair_value_gaps = self.detect_fair_value_gaps(df)
+            
+            # Detect liquidity levels
+            liquidity_levels = self.detect_liquidity_levels(df)
+            
+            # Categorize liquidity levels into supply/demand zones
+            supply_zones = [level for level in liquidity_levels if level['level_type'] == 'RESISTANCE']
+            demand_zones = [level for level in liquidity_levels if level['level_type'] == 'SUPPORT']
+            
+            # Add timeframe information to each pattern
+            for pattern in order_blocks + smart_money_traps + fair_value_gaps + supply_zones + demand_zones:
+                pattern['timeframe'] = timeframe
+            
+            return {
+                'order_blocks': order_blocks,
+                'smart_money_traps': smart_money_traps,
+                'fair_value_gaps': fair_value_gaps,
+                'liquidity_levels': liquidity_levels,
+                'supply_zones': supply_zones,
+                'demand_zones': demand_zones
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error analyzing SMC patterns: {str(e)}")
+            return {
+                'order_blocks': [],
+                'smart_money_traps': [],
+                'fair_value_gaps': [],
+                'liquidity_levels': [],
+                'supply_zones': [],
+                'demand_zones': []
+            } 

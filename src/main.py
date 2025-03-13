@@ -16,12 +16,12 @@ from sqlalchemy.orm import sessionmaker
 
 from src.data.market_data import MarketData
 from src.data.models import Position, PositionStatus, PositionType, MarketStructureData
+from src.data.database import DatabaseManager
 from src.technical.analysis import TechnicalAnalysis
 from src.technical.position_manager import PositionManager
 from src.technical.market_structure import MarketStructureAnalyzer
 from src.llm.analyzer import LLMAnalyzer
 from src.technical.smc_patterns import SMCPatternDetector
-import pandas as pd
 
 console = Console()
 logging.basicConfig(
@@ -43,31 +43,28 @@ def load_config(config_path: str = "config/config.yaml") -> Dict:
 
 class Hummingbird:
     def __init__(self, config_path: str):
-        self.config = self._load_config(config_path)
-        self._setup_logging()
-        
-        # Setup database connection
-        engine = create_engine(self.config['database']['url'])
-        Session = sessionmaker(bind=engine)
-        self.db = Session()
+        self.config = load_config(config_path)
         
         # Initialize components
-        self.position_manager = PositionManager(self.db)
-        self.market_structure = MarketStructureAnalyzer(self.db, self.config)
-        self.market_data = MarketData(self.config)
-        self.technical_analyzer = TechnicalAnalysis()
-        
-        # Initialize LLM analyzer with position management
+        self.technical_analysis = TechnicalAnalysis(self.config)
+        self.market_analyzer = MarketStructureAnalyzer(self.config)
         self.llm_analyzer = LLMAnalyzer(
             model_config=self.config['llm'],
-            model_name=self.config['llm']['default_model'],
-            technical_analyzer=self.technical_analyzer
+            model_name="gemini",
+            technical_analysis=self.technical_analysis
         )
-        self.llm_analyzer.set_position_manager(self.position_manager, self.db)
+        self.logger = logging.getLogger(__name__)
+        
+        # Initialize market data
+        self.market_data = MarketData(self.config)
         
         # Initialize trading mode and symbol
         self.trading_mode = "swing"
         self.symbol = None
+        
+        # Position manager will be initialized only when needed
+        self.position_manager = None
+        self.db = None
     
     def _load_config(self, config_path: str) -> Dict:
         """Load configuration from YAML file"""
@@ -138,6 +135,14 @@ class Hummingbird:
             self.logger.error(f"Error fetching market data: {str(e)}")
             raise
     
+    def _init_position_manager(self):
+        """Initialize position manager when needed"""
+        if self.position_manager is None:
+            self.db = DatabaseManager()
+            db_session = self.db.get_session()
+            self.position_manager = PositionManager(db_session)
+            self.llm_analyzer.set_position_manager(self.position_manager, self.db)
+    
     def monitor_positions(self):
         """Monitor active positions and market structure"""
         try:
@@ -153,10 +158,9 @@ class Hummingbird:
                 
                 # Analyze market structure
                 self.logger.info("Analyzing market structure")
-                structure = self.market_structure.analyze_market_structure(
-                    market_data,
-                    position.timeframe,
-                    position.id
+                structure = self.market_analyzer.analyze_market_structure(
+                    market_data=market_data,
+                    timeframe=position.timeframe
                 )
                 
                 # Check for exit signals
@@ -178,11 +182,11 @@ class Hummingbird:
     def _check_exit_signals(self, position, structure) -> bool:
         """Check for exit signals based on market structure"""
         # Check structure shift
-        if self.market_structure.detect_structure_shift(structure, position.last_structure):
+        if self.market_analyzer.detect_structure_shift(structure, position.last_structure):
             return True
         
         # Check position strength
-        strength = self.market_structure.validate_position_strength(
+        strength = self.market_analyzer.validate_position_strength(
             position.type,
             structure
         )
@@ -198,6 +202,10 @@ class Hummingbird:
         Analyze market data and generate trading signals
         """
         try:
+            # Initialize position manager if not already initialized
+            if self.position_manager is None:
+                self._init_position_manager()
+                
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
@@ -256,7 +264,7 @@ class Hummingbird:
                             self.logger.warning(f"Insufficient data points for {tf}: {len(df)}")
                             continue
                             
-                        df_with_indicators = self.technical_analyzer.calculate_indicators(df)
+                        df_with_indicators = self.technical_analysis.calculate_indicators(df)
                         if df_with_indicators is not None and not df_with_indicators.empty:
                             processed_data[tf] = df_with_indicators  # Store processed dataframe
                             technical_indicators[tf] = {
@@ -285,10 +293,9 @@ class Hummingbird:
                             self.logger.warning(f"Missing required columns for {tf}")
                             continue
                             
-                        market_structure[tf] = self.market_structure.analyze_market_structure(
-                            df,
-                            tf,
-                            symbol
+                        market_structure[tf] = self.market_analyzer.analyze_market_structure(
+                            market_data=df,
+                            timeframe=tf
                         )
                     except Exception as e:
                         self.logger.error(f"Error analyzing market structure for {tf}: {str(e)}")
@@ -312,11 +319,11 @@ class Hummingbird:
                         
                         # Create market structure data dictionary
                         smc_data = {
-                            'Order_Blocks': self.technical_analyzer.indicators.get('Order_Blocks', []),
-                            'Supply_Zones': self.technical_analyzer.indicators.get('Supply_Zones', []),
-                            'Demand_Zones': self.technical_analyzer.indicators.get('Demand_Zones', []),
-                            'Fair_Value_Gaps': self.technical_analyzer.indicators.get('Fair_Value_Gaps', []),
-                            'Liquidity_Levels': self.technical_analyzer.indicators.get('Liquidity_Levels', [])
+                            'Order_Blocks': self.technical_analysis.indicators.get('Order_Blocks', []),
+                            'Supply_Zones': self.technical_analysis.indicators.get('Supply_Zones', []),
+                            'Demand_Zones': self.technical_analysis.indicators.get('Demand_Zones', []),
+                            'Fair_Value_Gaps': self.technical_analysis.indicators.get('Fair_Value_Gaps', []),
+                            'Liquidity_Levels': self.technical_analysis.indicators.get('Liquidity_Levels', [])
                         }
                         
                         # Display patterns
@@ -325,26 +332,44 @@ class Hummingbird:
                 # Generate trading signal using all timeframes
                 if primary_timeframe in market_structure and market_structure[primary_timeframe] is not None:
                     # Prepare market context
-                    market_context = self.llm_analyzer.prepare_market_context(
-                        market_data,
-                        technical_indicators.get(primary_timeframe, {}),
-                        market_structure[primary_timeframe].order_blocks,
-                        market_structure[primary_timeframe].fair_value_gaps,
-                        market_structure[primary_timeframe].liquidity_levels
-                    )
+                    market_context = {
+                        'symbol': symbol,  # Add symbol
+                        'timeframe': primary_timeframe,  # Add timeframe
+                        'current_price': current_price,
+                        'technical_indicators': technical_indicators.get(primary_timeframe, {}),
+                        'market_structure': market_structure[primary_timeframe].get('market_structure', 'NEUTRAL'),
+                        'smc_data': market_structure[primary_timeframe].get('smc_data', {
+                            'order_blocks': [],
+                            'liquidity_levels': [],
+                            'fair_value_gaps': [],
+                            'supply_zones': [],
+                            'demand_zones': [],
+                            'smart_money_traps': []
+                        }),
+                        'active_positions': [],
+                        'config': self.config  # Add config
+                    }
+                    
+                    # Get active positions for context
+                    if self.position_manager:
+                        active_positions = self.position_manager.get_active_positions()
+                        market_context['active_positions'] = [
+                            {
+                                'id': pos.id,
+                                'type': pos.position_type.value,
+                                'status': pos.status.value,
+                                'entry_price': pos.entry_price,
+                                'current_price': pos.current_price,
+                                'stop_loss': pos.stop_loss,
+                                'take_profit': pos.take_profit,
+                                'pnl': pos.pnl
+                            } for pos in active_positions
+                        ]
                     
                     # Debug: Print market context
                     console.print("\n[bold cyan]Debug: Market Context being sent to LLM:[/bold cyan]")
-                    # console.print(market_context)
-                    console.print(market_context['active_positions'])
+                    console.print(market_context)
                     
-                    # Get active positions for context
-                    active_positions = self.position_manager.get_active_positions()
-                    console.print("\n[bold cyan]Debug: Current Active Positions:[/bold cyan]")
-                    for pos in active_positions:
-                        console.print(f"Position ID: {pos.id}, Type: {pos.position_type}, Status: {pos.status}")
-                    
-
                     # Generate signal
                     signal = self.llm_analyzer.generate_signal(market_context)
                     
@@ -490,14 +515,11 @@ class Hummingbird:
             self.logger.info(f"Starting Hummingbird trading system in {self.trading_mode} mode for {self.symbol}")
             
             # Get the monitoring interval from config
-            interval = self.config['monitoring']['interval']
+            interval = self.config['monitoring'].get('interval', 10)
             self.logger.info(f"Monitoring interval: {interval} seconds")
             
             while True:
                 try:
-                    # Monitor active positions
-                    self.monitor_positions()
-                    
                     # Analyze market for new opportunities
                     analysis_result = self.analyze_market(self.symbol)
                     
@@ -506,6 +528,10 @@ class Hummingbird:
                         signal_data = analysis_result['signal']
                         if isinstance(signal_data, dict) and 'confidence' in signal_data:
                             self.logger.info(f"Trading signal: {signal_data['signal']} with confidence {signal_data['confidence']:.2%}")
+                            
+                            # Initialize position manager only if we have a valid signal
+                            if signal_data['confidence'] >= self.config['llm'].get('confidence_threshold', 0.4):
+                                self._init_position_manager()
                     
                     # Sleep for the configured interval
                     self.logger.info(f"Waiting {interval} seconds before next analysis...")
@@ -513,7 +539,6 @@ class Hummingbird:
                     
                 except Exception as e:
                     self.logger.error(f"Error in main loop: {str(e)}")
-                    # Use a shorter delay on error
                     error_delay = self.config['monitoring'].get('error_delay', 5)
                     self.logger.info(f"Waiting {error_delay} seconds before retrying...")
                     time.sleep(error_delay)
@@ -521,7 +546,9 @@ class Hummingbird:
         except KeyboardInterrupt:
             self.logger.info("Shutting down Hummingbird trading system")
         finally:
-            self.db.close()
+            # Only close the database if it was initialized
+            if self.db is not None:
+                self.db.close()
 
     def run_analysis(self):
         """Run market analysis and position management"""
@@ -578,8 +605,8 @@ def main():
         console.print(f"[bold cyan]Debug: Setting up {args.model} model[/bold cyan]")
         hummingbird.llm_analyzer = LLMAnalyzer(
             model_config=hummingbird.config['llm'],
-            model_name=args.model,  # Use the model specified in command line args
-            technical_analyzer=hummingbird.technical_analyzer
+            model_name=args.model,
+            technical_analysis=hummingbird.technical_analysis
         )
         # Reinitialize position manager
         hummingbird.llm_analyzer.set_position_manager(hummingbird.position_manager, hummingbird.db)

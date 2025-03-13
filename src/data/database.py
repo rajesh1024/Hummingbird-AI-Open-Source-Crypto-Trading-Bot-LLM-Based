@@ -20,105 +20,114 @@ class DatabaseManager:
             self.engine = create_engine(db_url)
             self.Session = sessionmaker(bind=self.engine)
             Base.metadata.create_all(self.engine)
+            self.session = self.Session()
         except SQLAlchemyError as e:
             print(f"Error connecting to database: {e}")
             raise
     
     def get_session(self):
-        """Get a new database session"""
-        return self.Session()
+        """Get the current database session"""
+        if not self.session or not self.session.is_active:
+            self.session = self.Session()
+        return self.session
     
-    def close_session(self, session):
-        """Close a database session"""
-        if session:
-            session.close()
+    def commit(self):
+        """Commit the current transaction"""
+        try:
+            if self.session and self.session.is_active:
+                self.session.commit()
+        except Exception as e:
+            self.session.rollback()
+            raise e
+    
+    def rollback(self):
+        """Rollback the current transaction"""
+        if self.session and self.session.is_active:
+            self.session.rollback()
+    
+    def close(self):
+        """Close the current session"""
+        if self.session:
+            if self.session.is_active:
+                self.session.close()
+            self.session = None
+    
+    def __del__(self):
+        self.close()
     
     def execute_query(self, query, params=None):
         """Execute a raw SQL query"""
-        session = self.get_session()
         try:
+            session = self.get_session()
             result = session.execute(query, params or {})
-            session.commit()
             return result
         except SQLAlchemyError as e:
-            session.rollback()
             print(f"Error executing query: {e}")
             raise
-        finally:
-            self.close_session(session)
     
     def add_position(self, position_data):
         """Add a new position"""
-        session = self.get_session()
         try:
+            session = self.get_session()
             session.add(position_data)
-            session.commit()
+            session.flush()  # Ensure the position is persisted
             return position_data
         except SQLAlchemyError as e:
-            session.rollback()
             print(f"Error adding position: {e}")
             raise
-        finally:
-            self.close_session(session)
     
     def update_position(self, position_id, update_data):
         """Update an existing position"""
-        session = self.get_session()
         try:
+            session = self.get_session()
             position = session.query(Position).filter_by(id=position_id).first()
             if position:
                 for key, value in update_data.items():
                     setattr(position, key, value)
-                session.commit()
+                session.flush()  # Ensure updates are persisted
                 return position
             return None
         except SQLAlchemyError as e:
-            session.rollback()
             print(f"Error updating position: {e}")
             raise
-        finally:
-            self.close_session(session)
     
     def get_active_positions(self):
         """Get all active positions"""
-        session = self.get_session()
         try:
-            return session.query(Position).filter_by(status=PositionStatus.ACTIVE).all()
-        finally:
-            self.close_session(session)
+            session = self.get_session()
+            return session.query(Position).filter(
+                Position.status.in_([PositionStatus.OPEN, PositionStatus.PENDING])
+            ).all()
+        except SQLAlchemyError as e:
+            print(f"Error getting active positions: {e}")
+            raise
     
     def add_market_structure(self, market_structure_data):
         """Add new market structure data"""
-        session = self.get_session()
         try:
+            session = self.get_session()
             session.add(market_structure_data)
-            session.commit()
+            session.flush()  # Ensure the data is persisted
             return market_structure_data
         except SQLAlchemyError as e:
-            session.rollback()
             print(f"Error adding market structure: {e}")
             raise
-        finally:
-            self.close_session(session)
     
     def add_exit_signal(self, exit_signal_data):
         """Add a new exit signal"""
-        session = self.get_session()
         try:
+            session = self.get_session()
             session.add(exit_signal_data)
-            session.commit()
+            session.flush()  # Ensure the signal is persisted
             return exit_signal_data
         except SQLAlchemyError as e:
-            session.rollback()
             print(f"Error adding exit signal: {e}")
             raise
-        finally:
-            self.close_session(session)
     
     def get_position_history(self, position_id):
         """Get complete position history including market structure and exit signals"""
-        session = self.get_session()
         try:
+            session = self.get_session()
             position = session.query(Position).filter_by(id=position_id).first()
             if position:
                 return {
@@ -128,5 +137,6 @@ class DatabaseManager:
                     'exit_signals': position.exit_signals
                 }
             return None
-        finally:
-            self.close_session(session) 
+        except SQLAlchemyError as e:
+            print(f"Error getting position history: {e}")
+            raise 

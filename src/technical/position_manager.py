@@ -19,6 +19,19 @@ class PositionManager:
                        timeframe: str) -> Optional[Position]:
         """Create a new trading position"""
         try:
+            # Calculate and validate risk:reward ratio
+            risk_reward_ratio = self._calculate_risk_reward_ratio(
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                position_type=position_type
+            )
+            
+            # Minimum risk:reward should be 1:1.5
+            if risk_reward_ratio < 1.5:
+                self.logger.warning(f"Risk:reward ratio {risk_reward_ratio} is below minimum threshold of 1.5")
+                return None
+            
             position = Position(
                 symbol=symbol,
                 position_type=position_type,
@@ -28,15 +41,19 @@ class PositionManager:
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 size=size,
-                timeframe=timeframe
+                timeframe=timeframe,
+                risk_reward_ratio=risk_reward_ratio
             )
             self.db.add(position)
             self.db.commit()
             self.db.refresh(position)
+            self.logger.info(f"Created new position with risk:reward ratio of {risk_reward_ratio}")
             return position
+            
         except Exception as e:
+            self.logger.error(f"Error creating position: {str(e)}")
             self.db.rollback()
-            raise e
+            return None
     
     def get_active_positions(self) -> List[Position]:
         """Get all active positions"""
@@ -170,16 +187,45 @@ class PositionManager:
             position.last_analysis_time = datetime.utcnow()
             position.model_confidence = signal.get('confidence', 0.0)
             position.analysis_reasoning = signal.get('reasoning', '')
-            position.risk_reward_ratio = signal.get('position_management', {}).get('risk_reward_ratio', 0.0)
+            
+            # Handle position management recommendations
+            position_management = signal.get('position_management', {})
+            action = position_management.get('action', 'MAINTAIN')
+            
+            # Update take profit if adjustment is recommended
+            take_profit_adjustment = position_management.get('take_profit_adjustment')
+            if take_profit_adjustment and 'to' in take_profit_adjustment:
+                try:
+                    new_take_profit = float(''.join(filter(str.isdigit, take_profit_adjustment)))
+                    if new_take_profit > 0:
+                        position.take_profit = new_take_profit
+                        self.logger.info(f"Updated take profit to {new_take_profit}")
+                except ValueError:
+                    self.logger.warning(f"Could not parse take profit adjustment: {take_profit_adjustment}")
+            
+            # Update stop loss if adjustment is recommended
+            stop_loss_adjustment = position_management.get('stop_loss_adjustment')
+            if stop_loss_adjustment and stop_loss_adjustment.lower() != 'none':
+                try:
+                    new_stop_loss = float(''.join(filter(str.isdigit, stop_loss_adjustment)))
+                    if new_stop_loss > 0:
+                        position.stop_loss = new_stop_loss
+                        self.logger.info(f"Updated stop loss to {new_stop_loss}")
+                except ValueError:
+                    self.logger.warning(f"Could not parse stop loss adjustment: {stop_loss_adjustment}")
+            
+            # Update risk:reward ratio
+            position.risk_reward_ratio = position_management.get('risk_reward_ratio', position.risk_reward_ratio)
             
             # Store adjustment history
             adjustment = {
                 'timestamp': datetime.utcnow().isoformat(),
-                'action': signal.get('position_management', {}).get('action', 'MAINTAIN'),
-                'stop_loss_adjustment': signal.get('position_management', {}).get('stop_loss_adjustment', ''),
-                'take_profit_adjustment': signal.get('position_management', {}).get('take_profit_adjustment', ''),
+                'action': action,
+                'stop_loss_adjustment': stop_loss_adjustment,
+                'take_profit_adjustment': take_profit_adjustment,
                 'confidence': signal.get('confidence', 0.0),
-                'reasoning': signal.get('reasoning', '')
+                'reasoning': signal.get('reasoning', ''),
+                'risk_reward_ratio': position.risk_reward_ratio
             }
             
             if position.adjustment_history is None:
@@ -187,13 +233,63 @@ class PositionManager:
             position.adjustment_history.append(adjustment)
             
             # Update last adjustment reason
-            position.last_adjustment_reason = f"{adjustment['action']}: {adjustment['reasoning']}"
+            position.last_adjustment_reason = f"{action}: {signal.get('reasoning', '')}"
+            
+            # Check if position should be closed based on price targets
+            current_price = signal.get('current_price', position.current_price)
+            position.current_price = current_price
+            
+            if position.position_type == PositionType.LONG:
+                if current_price >= position.take_profit:
+                    position.status = PositionStatus.CLOSED
+                    self.logger.info(f"Closing LONG position {position_id} - Take profit reached")
+                    self.create_exit_signal(
+                        position_id=position_id,
+                        signal_type="TAKE_PROFIT",
+                        price=current_price,
+                        reason="Take profit target reached",
+                        confidence=position.model_confidence,
+                        model_analysis=signal.get('reasoning', '')
+                    )
+                elif current_price <= position.stop_loss:
+                    position.status = PositionStatus.CLOSED
+                    self.logger.info(f"Closing LONG position {position_id} - Stop loss reached")
+                    self.create_exit_signal(
+                        position_id=position_id,
+                        signal_type="STOP_LOSS",
+                        price=current_price,
+                        reason="Stop loss triggered",
+                        confidence=position.model_confidence,
+                        model_analysis=signal.get('reasoning', '')
+                    )
+            else:  # SHORT position
+                if current_price <= position.take_profit:
+                    position.status = PositionStatus.CLOSED
+                    self.logger.info(f"Closing SHORT position {position_id} - Take profit reached")
+                    self.create_exit_signal(
+                        position_id=position_id,
+                        signal_type="TAKE_PROFIT",
+                        price=current_price,
+                        reason="Take profit target reached",
+                        confidence=position.model_confidence,
+                        model_analysis=signal.get('reasoning', '')
+                    )
+                elif current_price >= position.stop_loss:
+                    position.status = PositionStatus.CLOSED
+                    self.logger.info(f"Closing SHORT position {position_id} - Stop loss reached")
+                    self.create_exit_signal(
+                        position_id=position_id,
+                        signal_type="STOP_LOSS",
+                        price=current_price,
+                        reason="Stop loss triggered",
+                        confidence=position.model_confidence,
+                        model_analysis=signal.get('reasoning', '')
+                    )
             
             # Calculate and update position strength
             if market_structure is not None:
                 position.position_strength = self._calculate_position_strength(position, market_structure)
             else:
-                # If no market structure data, use model confidence as base strength
                 position.position_strength = position.model_confidence
             
             self.db.commit()
@@ -262,4 +358,26 @@ class PositionManager:
         except Exception as e:
             self.logger.error(f"Error creating exit signal: {str(e)}")
             self.db.rollback()
-            return None 
+            return None
+
+    def _calculate_risk_reward_ratio(self, entry_price: float, stop_loss: float, take_profit: float, position_type: PositionType) -> float:
+        """Calculate and validate risk:reward ratio"""
+        try:
+            if position_type == PositionType.LONG:
+                risk = entry_price - stop_loss
+                reward = take_profit - entry_price
+            else:  # SHORT
+                risk = stop_loss - entry_price
+                reward = entry_price - take_profit
+            
+            if risk <= 0:
+                self.logger.warning("Invalid risk calculation - risk must be positive")
+                return 0.0
+                
+            ratio = reward / risk
+            # Standard format is risk:reward (e.g., 1:2 means risk 1 to make 2)
+            return round(ratio, 2)
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating risk:reward ratio: {str(e)}")
+            return 0.0 

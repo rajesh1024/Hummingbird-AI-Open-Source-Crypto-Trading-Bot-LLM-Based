@@ -24,11 +24,11 @@ class LLMAnalyzer:
         self,
         model_config: Dict,
         model_name: str = "mistral",
-        technical_analyzer: Optional['TechnicalAnalysis'] = None
+        technical_analysis: Optional['TechnicalAnalysis'] = None
     ):
         self.model_config = model_config
         self.model_name = model_name
-        self.technical_analyzer = technical_analyzer
+        self.technical_analysis = technical_analysis
         self.position_manager = None  # Will be set after initialization
         self.db = None  # Will be set after initialization
         self.logger = logging.getLogger(__name__)
@@ -89,151 +89,95 @@ class LLMAnalyzer:
             console.print(f"[bold red]Error loading model: {str(e)}")
             raise
     
-    def prepare_market_context(
-        self,
-        market_data: Dict[str, pd.DataFrame],
-        technical_indicators: Dict[str, float],
-        order_blocks: List[Dict],
-        fair_value_gaps: List[Dict],
-        liquidity_levels: List[Dict]
-    ) -> Dict:
-        """Prepare market context for LLM analysis"""
-        # Initialize the context dictionary
-        context_dict = {
-            'market_data': {},
-            'technical_indicators': technical_indicators,
-            'order_blocks': order_blocks,
-            'fair_value_gaps': fair_value_gaps,
-            'liquidity_levels': liquidity_levels,
-            'analysis': []
-        }
-        
-        # Add recent price action first with more detail
-        context_dict['analysis'].append("Recent Price Action (Last 5 Candles):")
-        for timeframe, df in market_data.items():
-            last_5_candles = df.tail(5)
-            context_dict['analysis'].append(f"\n{timeframe} Timeframe:")
-            candle_data = []
-            for i in range(len(last_5_candles)-1, -1, -1):
-                candle = last_5_candles.iloc[i]
-                body_size = abs(candle['close'] - candle['open'])
-                upper_wick = candle['high'] - max(candle['open'], candle['close'])
-                lower_wick = min(candle['open'], candle['close']) - candle['low']
-                candle_type = "Bullish" if candle['close'] > candle['open'] else "Bearish"
-                candle_info = {
-                    'timestamp': str(candle.name),
-                    'type': candle_type,
-                    'open': float(candle['open']),
-                    'high': float(candle['high']),
-                    'low': float(candle['low']),
-                    'close': float(candle['close']),
-                    'volume': float(candle['volume']),
-                    'body_size': float(body_size),
-                    'upper_wick': float(upper_wick),
-                    'lower_wick': float(lower_wick)
-                }
-                candle_data.append(candle_info)
-            context_dict['market_data'][timeframe] = candle_data
-        
-        # Add technical indicators with trend analysis
-        context_dict['analysis'].append("\nTechnical Indicators and Trend Analysis:")
-        for name, value in technical_indicators.items():
-            if isinstance(value, (int, float)):
-                context_dict['analysis'].append(f"{name}: {float(value):.2f}")
-                # Add trend analysis for key indicators
-                if name == 'RSI':
-                    if value > 70:
-                        context_dict['analysis'].append("RSI indicates overbought conditions - Potential SELL signal")
-                    elif value < 30:
-                        context_dict['analysis'].append("RSI indicates oversold conditions - Potential BUY signal")
-                    elif value > 60:
-                        context_dict['analysis'].append("RSI showing bullish momentum")
-                    elif value < 40:
-                        context_dict['analysis'].append("RSI showing bearish momentum")
-                elif name == 'MACD_Hist':
-                    if value > 0:
-                        context_dict['analysis'].append("MACD histogram indicates bullish momentum - Potential BUY signal")
-                    else:
-                        context_dict['analysis'].append("MACD histogram indicates bearish momentum - Potential SELL signal")
-                elif name in ['EMA_8', 'EMA_21']:
-                    if name == 'EMA_8' and value > technical_indicators.get('EMA_21', 0):
-                        context_dict['analysis'].append("Price above both EMAs - Bullish trend")
-                    elif name == 'EMA_8' and value < technical_indicators.get('EMA_21', 0):
-                        context_dict['analysis'].append("Price below both EMAs - Bearish trend")
-        
-        # Add SMC analysis with emphasis on recent patterns
-        context_dict['analysis'].append("\nSmart Money Concepts (SMC) Analysis:")
-        
-        # Add Order Blocks (most recent first)
-        if order_blocks:
-            context_dict['analysis'].append("\nRecent Order Blocks (Sorted by Strength):")
-            for block in sorted(order_blocks, key=lambda x: x.strength, reverse=True)[:3]:
-                current_price = market_data[list(market_data.keys())[0]]['close'].iloc[-1]
-                distance = abs(block.price - current_price) / current_price * 100
-                block_info = {
-                    'type': block.block_type,
-                    'price': float(block.price),
-                    'volume': float(block.volume),
-                    'strength': float(block.strength),
-                    'distance': float(distance)
-                }
-                context_dict['analysis'].append(
-                    f"- Type: {block.block_type}, "
-                    f"Price: {block.price:.2f}, "
-                    f"Volume: {block.volume:.2f}, "
-                    f"Strength: {block.strength:.2f}"
-                )
-                context_dict['analysis'].append(f"  Distance from current price: {distance:.2f}%")
-                if distance < 0.5:
-                    context_dict['analysis'].append(f"  ⚠️ Strong signal: Price near order block!")
-        
-        # Add current price to context
-        context_dict['current_price'] = float(market_data[list(market_data.keys())[0]]['close'].iloc[-1])
-        
-        # Get active positions if position manager is initialized
-        if self.position_manager is not None:
-            active_positions = self.position_manager.get_active_positions()
-            context_dict['active_positions'] = []
+    def prepare_market_context(self, market_data: pd.DataFrame, technical_indicators: Dict, market_structure: Dict) -> Dict:
+        """
+        Prepare market context for LLM analysis
+        """
+        try:
+            if market_data is None or technical_indicators is None or market_structure is None:
+                raise ValueError("Invalid input data")
+
+            # Create enhanced market context
+            context = {
+                'current_price': market_structure.get('current_price', market_data['close'].iloc[-1]),
+                'technical_indicators': technical_indicators,
+                'market_structure': market_structure.get('market_structure', 'NEUTRAL'),
+                'timeframe': market_structure.get('timeframe', ''),
+                'smc_data': {
+                    'order_blocks': market_structure.get('order_blocks', []),
+                    'fair_value_gaps': market_structure.get('fair_value_gaps', []),
+                    'liquidity_levels': market_structure.get('liquidity_levels', [])
+                },
+                'trend_analysis': market_structure.get('trend_analysis', {}),
+                'market_context': market_structure.get('market_context', {}),
+                'volatility': market_structure.get('volatility', 0),
+                'active_positions': self._get_active_positions() if self.position_manager else []
+            }
+
+            # Add key level summary
+            context['key_levels'] = self._summarize_key_levels(context['smc_data'])
             
-            for position in active_positions:
-                # Calculate PnL
-                if position.position_type == "LONG":
-                    pnl = (context_dict['current_price'] - position.entry_price) / position.entry_price * 100
-                else:
-                    pnl = (position.entry_price - context_dict['current_price']) / position.entry_price * 100
-                
-                position_info = {
-                    'id': position.id,
-                    'type': position.position_type,
-                    'entry_price': float(position.entry_price),
-                    'current_price': float(position.current_price),
-                    'stop_loss': float(position.stop_loss),
-                    'take_profit': float(position.take_profit),
-                    'pnl': float(pnl),
-                    'risk_reward_ratio': float(position.risk_reward_ratio),
-                    'position_strength': float(position.position_strength),
-                    'last_adjustment_reason': position.last_adjustment_reason
-                }
-                context_dict['active_positions'].append(position_info)
-                
-                # Add position analysis to context
-                context_dict['analysis'].append(f"\nActive Position Analysis:")
-                context_dict['analysis'].append(f"Position {position.id}:")
-                context_dict['analysis'].append(f"- Type: {position.position_type}")
-                context_dict['analysis'].append(f"- Entry: ${position.entry_price:.2f}")
-                context_dict['analysis'].append(f"- Current: ${context_dict['current_price']:.2f}")
-                context_dict['analysis'].append(f"- Stop Loss: ${position.stop_loss:.2f}")
-                context_dict['analysis'].append(f"- Take Profit: ${position.take_profit:.2f}")
-                context_dict['analysis'].append(f"- PnL: {pnl:.2f}%")
-                context_dict['analysis'].append(f"- Risk:Reward: {position.risk_reward_ratio:.2f}")
-                context_dict['analysis'].append(f"- Position Strength: {position.position_strength:.2f}")
-                if position.last_adjustment_reason:
-                    context_dict['analysis'].append(f"- Last Adjustment: {position.last_adjustment_reason}")
-        else:
-            context_dict['active_positions'] = []
-        
-        return context_dict
-    
+            # Add trading session context
+            context['session_info'] = {
+                'type': market_structure.get('market_context', {}).get('session_type', 'UNKNOWN'),
+                'volume_profile': market_structure.get('market_context', {}).get('volume_analysis', {}),
+                'price_action': market_structure.get('market_context', {}).get('price_action', {})
+            }
+
+            return context
+
+        except Exception as e:
+            self.logger.error(f"Error preparing market context: {str(e)}")
+            return {
+                'current_price': 0,
+                'technical_indicators': {},
+                'market_structure': 'NEUTRAL',
+                'smc_data': {'order_blocks': [], 'fair_value_gaps': [], 'liquidity_levels': []},
+                'active_positions': []
+            }
+
+    def _summarize_key_levels(self, smc_data: Dict) -> Dict:
+        """Summarize key price levels for quick reference"""
+        key_levels = {
+            'support': [],
+            'resistance': [],
+            'high_probability_zones': []
+        }
+
+        # Process liquidity levels
+        for level in smc_data.get('liquidity_levels', []):
+            if level['level_type'] == 'SUPPORT':
+                key_levels['support'].append({
+                    'price': level['price'],
+                    'strength': level['strength'],
+                    'confluence': len(level.get('confluence_factors', [])),
+                    'test_count': level.get('test_count', 0)
+                })
+            else:
+                key_levels['resistance'].append({
+                    'price': level['price'],
+                    'strength': level['strength'],
+                    'confluence': len(level.get('confluence_factors', [])),
+                    'test_count': level.get('test_count', 0)
+                })
+
+        # Identify high probability zones (areas with multiple confluences)
+        for level_type in ['support', 'resistance']:
+            levels = key_levels[level_type]
+            for i, level in enumerate(levels):
+                nearby_levels = [l for l in levels if abs(l['price'] - level['price']) / level['price'] < 0.001]
+                if len(nearby_levels) > 1:
+                    zone = {
+                        'price': sum(l['price'] for l in nearby_levels) / len(nearby_levels),
+                        'strength': max(l['strength'] for l in nearby_levels),
+                        'type': level_type.upper(),
+                        'confluence_count': sum(l['confluence'] for l in nearby_levels)
+                    }
+                    if zone not in key_levels['high_probability_zones']:
+                        key_levels['high_probability_zones'].append(zone)
+
+        return key_levels
+
     def set_position_manager(self, position_manager, db):
         """Set the position manager and database connection"""
         self.position_manager = position_manager
@@ -242,6 +186,10 @@ class LLMAnalyzer:
     def generate_signal(self, market_context: dict, confidence_threshold: float = None) -> dict:
         """Generate trading signal and manage positions based on model's recommendations"""
         try:
+            console.print("\n[bold cyan]Debug: Starting signal generation...[/bold cyan]")
+            # console.print("\n[bold cyan]Debug: Market context:[/bold cyan]")
+            # console.print(market_context)
+            
             # Get current active positions if position manager is initialized
             active_positions = []
             if self.position_manager is not None:
@@ -432,12 +380,13 @@ class LLMAnalyzer:
             if signal['signal'] != "HOLD":
                 position_type = "LONG" if signal['signal'] == "BUY" else "SHORT"
                 
-                # Debug log market context and signal
-                console.print("\n[bold cyan]Debug: Position Creation Process:[/bold cyan]")
-                console.print(f"Signal Type: {signal['signal']}")
-                console.print(f"Position Type: {position_type}")
-                console.print(f"Market Context Keys: {list(market_context.keys())}")
-                
+                # Ensure required fields are present
+                if not all(key in market_context for key in ['symbol', 'timeframe']):
+                    console.print("[red]Error: Missing required fields in market_context[/red]")
+                    console.print(f"Required: symbol, timeframe")
+                    console.print(f"Present: {list(market_context.keys())}")
+                    return None
+
                 # Add default configuration if not present
                 if 'config' not in market_context:
                     console.print("[yellow]Warning: No config found in market_context, using defaults[/yellow]")
@@ -448,47 +397,45 @@ class LLMAnalyzer:
                         }
                     }
                 
-                console.print("\n[bold cyan]Debug: Configuration:[/bold cyan]")
-                console.print(f"Config: {market_context.get('config', {})}")
+                # Validate required signal fields
+                required_signal_fields = ['entry_price', 'stop_loss', 'take_profit', 'confidence']
+                if not all(key in signal for key in required_signal_fields):
+                    console.print("[red]Error: Missing required fields in signal[/red]")
+                    console.print(f"Required: {required_signal_fields}")
+                    console.print(f"Present: {list(signal.keys())}")
+                    return None
                 
                 # Get confidence threshold from config
                 confidence_threshold = self.model_config.get('confidence_threshold', 0.3)
                 
                 # Validate signal confidence
-                console.print("\n[bold cyan]Debug: Confidence Check:[/bold cyan]")
-                console.print(f"Signal Confidence: {signal.get('confidence', 0):.2f}")
-                console.print(f"Confidence Threshold: {confidence_threshold}")
-                
                 if signal.get('confidence', 0) < confidence_threshold:
                     console.print("[red]Position creation failed: Confidence below threshold[/red]")
                     self.logger.warning(f"Skipping position creation: Confidence {signal.get('confidence', 0):.2f} below threshold {confidence_threshold}")
                     return None
                 
-                # Validate risk-reward ratio from model's recommendation
-                console.print("\n[bold cyan]Debug: Risk-Reward Check:[/bold cyan]")
-                risk_reward_ratio = signal['position_management'].get('risk_reward_ratio', 0)
+                # Calculate risk-reward ratio
+                risk_reward_ratio = abs(signal['take_profit'] - signal['entry_price']) / abs(signal['entry_price'] - signal['stop_loss'])
                 min_risk_reward = market_context['config']['position'].get('min_risk_reward_ratio', 2.0)
-                
-                console.print(f"Risk:Reward Ratio: {risk_reward_ratio:.2f}")
-                console.print(f"Minimum Required: {min_risk_reward}")
                 
                 if risk_reward_ratio >= min_risk_reward:
                     # Calculate position size based on risk management
                     risk_per_trade = market_context['config']['position'].get('risk_per_trade', 100)
                     stop_loss_distance = abs(signal['entry_price'] - signal['stop_loss'])
-                    position_size = risk_per_trade / stop_loss_distance
+                    position_size = risk_per_trade / stop_loss_distance if stop_loss_distance > 0 else 0
                     
-                    console.print("\n[bold cyan]Debug: Position Size Calculation:[/bold cyan]")
-                    console.print(f"Risk Per Trade: ${risk_per_trade}")
-                    console.print(f"Stop Loss Distance: {stop_loss_distance:.2f}")
-                    console.print(f"Calculated Position Size: {position_size:.4f}")
+                    if position_size <= 0:
+                        console.print("[red]Error: Invalid position size calculated[/red]")
+                        return None
                     
                     try:
-                        console.print("\n[bold cyan]Debug: Creating Position...[/bold cyan]")
                         if self.position_manager is None:
                             console.print("[red]Error: Position manager is not initialized[/red]")
                             return None
-                            
+                        
+                        # Start a new transaction
+                        self.db.rollback()  # Clear any existing transaction
+                        
                         # Create new position with model's recommended levels
                         position = self.position_manager.create_position(
                             symbol=market_context.get('symbol', 'BTC/USDT'),
@@ -501,7 +448,6 @@ class LLMAnalyzer:
                         )
                         
                         if position:
-                            console.print("[green]Position created successfully![/green]")
                             # Update position with initial analysis
                             self.position_manager.update_position_with_analysis(
                                 position_id=position.id,
@@ -509,51 +455,37 @@ class LLMAnalyzer:
                                 market_structure=signal.get('market_structure', None)
                             )
                             
-                            # Calculate initial position strength
-                            position.position_strength = self.position_manager._calculate_position_strength(
-                                position,
-                                signal.get('market_structure', None)
-                            )
+                            # Commit the transaction
+                            self.db.commit()
                             
-                            # Log successful position creation
-                            console.print("\n[bold green]Successfully created new position:[/bold green]")
+                            console.print("[green]Position created and persisted successfully![/green]")
                             console.print(f"Position ID: {position.id}")
                             console.print(f"Type: {position.position_type}")
                             console.print(f"Entry Price: ${position.entry_price:.2f}")
                             console.print(f"Stop Loss: ${position.stop_loss:.2f}")
                             console.print(f"Take Profit: ${position.take_profit:.2f}")
                             console.print(f"Position Size: {position.size:.4f}")
-                            console.print(f"Risk:Reward Ratio: {position.risk_reward_ratio:.2f}")
-                            console.print(f"Position Strength: {position.position_strength:.2f}")
-                            
-                            # Commit the transaction
-                            self.db.commit()
-                            
-                            self.logger.info(f"Created new {position_type} position with R:R ratio of {risk_reward_ratio}")
-                            self.logger.info(f"Position size: {position_size:.4f} based on risk per trade: ${risk_per_trade}")
-                            self.logger.info(f"Initial position strength: {position.position_strength:.2f}")
+                            console.print(f"Risk:Reward Ratio: {risk_reward_ratio:.2f}")
                             
                             return position
                         else:
-                            console.print("\n[bold red]Failed to create position: Position manager returned None[/bold red]")
-                            self.logger.error("Failed to create position: Position manager returned None")
+                            console.print("[red]Failed to create position: Position manager returned None[/red]")
+                            self.db.rollback()
                             return None
                             
                     except Exception as e:
-                        console.print(f"\n[bold red]Error during position creation: {str(e)}[/bold red]")
-                        self.logger.error(f"Error during position creation: {str(e)}")
+                        console.print(f"[red]Error during position creation: {str(e)}[/red]")
                         self.db.rollback()
                         return None
                 else:
-                    console.print(f"\n[yellow]Warning: Risk-reward ratio {risk_reward_ratio:.2f} below minimum {min_risk_reward}, skipping position creation[/yellow]")
-                    self.logger.warning(f"Skipping position creation: Risk-reward ratio {risk_reward_ratio} below minimum {min_risk_reward}")
+                    console.print(f"[yellow]Warning: Risk-reward ratio {risk_reward_ratio:.2f} below minimum {min_risk_reward}[/yellow]")
                     return None
             else:
-                console.print("[yellow]Warning: Position type is HOLD, skipping position creation[/yellow]")
+                console.print("[yellow]Warning: Signal type is HOLD, skipping position creation[/yellow]")
+                return None
                 
         except Exception as e:
-            console.print(f"\n[bold red]Error creating position: {str(e)}[/bold red]")
-            self.logger.error(f"Error creating position: {str(e)}")
+            console.print(f"[red]Error creating position: {str(e)}[/red]")
             self.db.rollback()
             return None
 

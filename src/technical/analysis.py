@@ -9,8 +9,9 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 class TechnicalAnalysis:
-    def __init__(self):
+    def __init__(self, config: Dict = None):
         self.logger = logging.getLogger(__name__)
+        self.config = config or {}
         self.indicators = {}
         self.fair_value_gaps = []
         self.liquidity_sweeps = []
