@@ -99,6 +99,7 @@ risk_management:
     max_position_size: 0.1  # 10% of portfolio
     max_daily_trades: 5
     stop_loss_percentage: 0.02  # 2%
+    min_risk_reward: 2.0  # Minimum risk-reward ratio
     take_profit_levels:
       - 0.03  # 3%
       - 0.05  # 5%
@@ -107,6 +108,7 @@ risk_management:
     max_position_size: 0.05  # 5% of portfolio
     max_daily_trades: 10
     stop_loss_percentage: 0.01  # 1%
+    min_risk_reward: 1.0  # Reduced minimum risk-reward ratio for scalping
     take_profit_levels:
       - 0.02  # 2%
       - 0.03  # 3%
@@ -139,52 +141,54 @@ technical:
   indicators:
     rsi:
       period: 14
-      overbought: 70
-      oversold: 30
+      overbought: 65
+      oversold: 35
     macd:
-      fast_period: 12
-      slow_period: 26
+      fast_period: 8
+      slow_period: 17
       signal_period: 9
     ema:
       short_period: 8
       long_period: 21
   smc:
     order_block:
-      min_strength: 0.2
-      max_lookback: 20
+      min_strength: 0.3
+      max_lookback: 10
     fair_value_gap:
-      min_size: 0.00002
-      max_lookback: 15
+      min_size: 0.00001
+      max_lookback: 8
     liquidity_level:
-      min_volume: 50
+      min_volume: 30
       min_touches: 1
-      max_deviation: 0.0001
+      max_deviation: 0.00005
 
 database:
-  url: postgresql://postgres:postgres@localhost:5432/hummingbird_v2
+  url: postgresql://postgres:postgres@localhost:5432/hummingbird
   host: localhost
   port: 5432
-  name: hummingbird_v2
+  name: hummingbird
   user: postgres
   password: postgres
 
 position:
-  min_strength: 0.6  # minimum position strength to maintain
-  max_positions: 5  # maximum number of concurrent positions
-  risk_per_trade: 0.02  # 2% risk per trade
-  max_daily_loss: 0.05  # 5% maximum daily loss
+  min_strength: 0.7
+  max_positions: 3
+  risk_per_trade: 0.01
+  max_daily_loss: 0.03
+  min_balance: 100
+  min_risk_reward: 1.0  # Added minimum risk-reward ratio for position management
 
 market_structure:
   order_block:
-    min_volume_multiplier: 1.2
-    min_body_size: 0.0005
-    max_lookback: 20
+    min_volume_multiplier: 1.5
+    min_body_size: 0.0003
+    max_lookback: 10
   
   fair_value_gap:
-    min_gap_size: 0.0002
-    max_fill_time: 48
+    min_gap_size: 0.0001
+    max_fill_time: 24
   
   liquidity_level:
-    min_touches: 2
-    max_deviation: 0.0005
-    volume_threshold: 1.1 
+    min_touches: 1
+    max_deviation: 0.0002
+    volume_threshold: 1.3 

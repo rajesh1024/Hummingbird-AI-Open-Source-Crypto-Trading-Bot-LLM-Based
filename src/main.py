@@ -15,7 +15,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from src.data.market_data import MarketData
-from src.data.models import Position, PositionStatus, PositionType, MarketStructureData
+from src.data.models import Position, PositionStatus, PositionType
 from src.data.database import DatabaseManager
 from src.technical.analysis import TechnicalAnalysis
 from src.technical.position_manager import PositionManager
@@ -109,10 +109,10 @@ class Hummingbird:
         table.add_column("Component", style="cyan")
         table.add_column("Details", style="green")
         
-        table.add_row("Structure Type", market_structure.structure_type.value)
-        table.add_row("Order Blocks", str(len(market_structure.order_blocks)))
-        table.add_row("Fair Value Gaps", str(len(market_structure.fair_value_gaps)))
-        table.add_row("Liquidity Levels", str(len(market_structure.liquidity_levels)))
+        table.add_row("Structure Type", market_structure.get('market_structure', 'NEUTRAL'))
+        table.add_row("Order Blocks", str(len(market_structure.get('smc_data', {}).get('order_blocks', []))))
+        table.add_row("Fair Value Gaps", str(len(market_structure.get('smc_data', {}).get('fair_value_gaps', []))))
+        table.add_row("Liquidity Levels", str(len(market_structure.get('smc_data', {}).get('liquidity_levels', []))))
         
         console.print(table)
     
@@ -171,7 +171,7 @@ class Hummingbird:
                 
                 # Update position status
                 self.logger.info("Updating position status")
-                self.position_manager.update_position_status(position.id, structure)
+                self.position_manager.update_position_status(position.id, market_data['close'].iloc[-1])
                 
         except Exception as e:
             self.logger.error(f"Error monitoring positions: {str(e)}")
@@ -187,7 +187,7 @@ class Hummingbird:
         
         # Check position strength
         strength = self.market_analyzer.validate_position_strength(
-            position.type,
+            position.position_type,
             structure
         )
         
@@ -327,7 +327,7 @@ class Hummingbird:
                         }
                         
                         # Display patterns
-                        self._display_patterns(smc_data)
+                        # self._display_patterns(smc_data)
                 
                 # Generate trading signal using all timeframes
                 if primary_timeframe in market_structure and market_structure[primary_timeframe] is not None:
@@ -367,8 +367,8 @@ class Hummingbird:
                         ]
                     
                     # Debug: Print market context
-                    console.print("\n[bold cyan]Debug: Market Context being sent to LLM:[/bold cyan]")
-                    console.print(market_context)
+                    # console.print("\n[bold cyan]Debug: Market Context being sent to LLM:[/bold cyan]")
+                    # console.print(market_context)
                     
                     # Generate signal
                     signal = self.llm_analyzer.generate_signal(market_context)

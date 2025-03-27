@@ -34,6 +34,12 @@ class LLMAnalyzer:
         self.logger = logging.getLogger(__name__)
         self.model = self._load_model()
         self.confidence_threshold = model_config.get('confidence_threshold', 0.3)  # Get from config
+        self.default_settings = {
+            'min_risk_reward_ratio': 1.0,  # Changed from 2.0 to match config
+            'min_position_strength': 0.7,
+            'max_positions': 3,
+            'risk_per_trade': 0.01
+        }
         
     def _load_model(self):
         """
@@ -308,32 +314,29 @@ class LLMAnalyzer:
                     self.logger.info(f"Closing position {position.id} based on model recommendation")
                     self.position_manager.close_position(position.id)
                     
-                    # Create exit signal
-                    self.position_manager.create_exit_signal(
-                        position_id=position.id,
-                        signal_type='model_recommendation',
-                        price=current_price,
-                        reason=signal.get('reasoning', 'Model recommended position closure'),
-                        confidence=signal.get('confidence', 0.0),
-                        model_analysis=signal.get('reasoning', '')
-                    )
-                    
-                elif action == 'UPDATE':
-                    # Update stop loss and take profit based on model's recommendations
-                    self._update_position_levels(position, signal, position_management)
-                    
+                    # # Create exit signal - commented out as not needed
+                    # self.position_manager.create_exit_signal(
+                    #     position_id=position.id,
+                    #     signal_type='model_recommendation',
+                    #     price=current_price,
+                    #     reason=signal.get('reasoning', 'Model recommended position closure'),
+                    #     confidence=signal.get('confidence', 0.0),
+                    #     model_analysis=signal.get('reasoning', '')
+                    # )
+                else:
                     # Update position with model's analysis
                     self.position_manager.update_position_with_analysis(
                         position_id=position.id,
+                        current_price=current_price,
                         signal=signal,
                         market_structure=signal.get('market_structure', None)
                     )
                     
-                # Update position strength
-                position.position_strength = self.position_manager._calculate_position_strength(
-                    position,
-                    signal.get('market_structure', None)
-                )
+                    # Update position strength
+                    position.position_strength = self.position_manager._calculate_position_strength(
+                        position,
+                        signal.get('market_structure', None)
+                    )
                 
                 # Commit changes
                 self.db.commit()
@@ -343,40 +346,15 @@ class LLMAnalyzer:
             self.db.rollback()
             raise
 
-    def _update_position_levels(self, position, signal, position_management):
-        """Update position levels based on model's recommendations"""
-        try:
-            # Get adjustments from position management
-            stop_loss_adjustment = position_management.get('stop_loss_adjustment')
-            take_profit_adjustment = position_management.get('take_profit_adjustment')
-            
-            if position.position_type == "LONG":
-                # For long positions
-                if stop_loss_adjustment and signal['stop_loss'] > position.stop_loss:
-                    self.logger.info(f"Updating stop loss for position {position.id}: {stop_loss_adjustment}")
-                    self.position_manager.adjust_stop_loss(position.id, signal['stop_loss'])
-                    
-                if take_profit_adjustment and signal['take_profit'] > position.take_profit:
-                    self.logger.info(f"Updating take profit for position {position.id}: {take_profit_adjustment}")
-                    self.position_manager.adjust_take_profit(position.id, signal['take_profit'])
-                    
-            else:  # SHORT position
-                # For short positions
-                if stop_loss_adjustment and signal['stop_loss'] < position.stop_loss:
-                    self.logger.info(f"Updating stop loss for position {position.id}: {stop_loss_adjustment}")
-                    self.position_manager.adjust_stop_loss(position.id, signal['stop_loss'])
-                    
-                if take_profit_adjustment and signal['take_profit'] < position.take_profit:
-                    self.logger.info(f"Updating take profit for position {position.id}: {take_profit_adjustment}")
-                    self.position_manager.adjust_take_profit(position.id, signal['take_profit'])
-                    
-        except Exception as e:
-            self.logger.error(f"Error updating position levels: {str(e)}")
-            raise
-
     def _create_new_position(self, signal, market_context):
         """Create a new position based on signal"""
         try:
+            # Check if there are any active positions first
+            active_positions = self.position_manager.get_active_positions()
+            if active_positions:
+                self.logger.info(f"Skipping new position creation - {len(active_positions)} active positions exist")
+                return None
+
             if signal['signal'] != "HOLD":
                 position_type = "LONG" if signal['signal'] == "BUY" else "SHORT"
                 
@@ -416,7 +394,7 @@ class LLMAnalyzer:
                 
                 # Calculate risk-reward ratio
                 risk_reward_ratio = abs(signal['take_profit'] - signal['entry_price']) / abs(signal['entry_price'] - signal['stop_loss'])
-                min_risk_reward = market_context['config']['position'].get('min_risk_reward_ratio', 2.0)
+                min_risk_reward = market_context['config'].get('risk_management', {}).get('scalping', {}).get('min_risk_reward', 1.0)
                 
                 if risk_reward_ratio >= min_risk_reward:
                     # Calculate position size based on risk management
@@ -451,6 +429,7 @@ class LLMAnalyzer:
                             # Update position with initial analysis
                             self.position_manager.update_position_with_analysis(
                                 position_id=position.id,
+                                current_price=signal['entry_price'],  # Use entry price as current price for initial analysis
                                 signal=signal,
                                 market_structure=signal.get('market_structure', None)
                             )

@@ -26,21 +26,13 @@ def upgrade() -> None:
     op.add_column('positions', sa.Column('model_confidence', sa.Float(), nullable=True, server_default='0.0'))
     op.add_column('positions', sa.Column('analysis_reasoning', sa.String(), nullable=True))
 
-    # Add new columns to exit_signals table
-    op.add_column('exit_signals', sa.Column('confidence', sa.Float(), nullable=True, server_default='0.0'))
-    op.add_column('exit_signals', sa.Column('model_analysis', sa.String(), nullable=True))
-
 
 def downgrade() -> None:
-    # Remove new columns from positions table
+    # Remove columns from positions table
     op.drop_column('positions', 'risk_reward_ratio')
     op.drop_column('positions', 'last_analysis_time')
     op.drop_column('positions', 'position_strength')
     op.drop_column('positions', 'last_adjustment_reason')
     op.drop_column('positions', 'adjustment_history')
     op.drop_column('positions', 'model_confidence')
-    op.drop_column('positions', 'analysis_reasoning')
-
-    # Remove new columns from exit_signals table
-    op.drop_column('exit_signals', 'confidence')
-    op.drop_column('exit_signals', 'model_analysis') 
+    op.drop_column('positions', 'analysis_reasoning') 

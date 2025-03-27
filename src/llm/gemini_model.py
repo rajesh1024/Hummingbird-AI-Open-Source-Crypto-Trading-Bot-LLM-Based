@@ -26,6 +26,9 @@ class GeminiModel:
         self.temperature = temperature
         self.system_prompt = system_prompt
         
+        # Initialize logger
+        self.logger = logging.getLogger(__name__)
+        
         # Configure the Gemini API
         console.print("[bold cyan]Debug: Configuring Gemini API[/bold cyan]")
         genai.configure(api_key=self.api_key)
@@ -152,26 +155,42 @@ class GeminiModel:
             "take_profit": 0
         }
 
-    def _validate_response(self, response: Dict) -> Dict:
-        """Validate the response from the model"""
+    def _validate_response(self, response: Dict[str, Any]) -> Dict:
+        """Validate the LLM response format and content."""
         try:
-            # Debug: Print response before validation
-            # console.print("\n[bold cyan]Debug: Validating response:[/bold cyan]")
-            # console.print(response)
-            
-            # Basic structure validation
+            # Check required fields
             required_fields = ['signal', 'confidence', 'reasoning', 'entry_price', 'stop_loss', 'take_profit']
             missing_fields = [f for f in required_fields if f not in response]
             if missing_fields:
                 console.print(f"[yellow]Warning: Missing required fields: {missing_fields}[/yellow]")
                 return self._get_default_response()
-            
-            # Signal validation
+
+            # Validate signal
             if response['signal'] not in ['BUY', 'SELL', 'HOLD']:
                 console.print(f"[yellow]Warning: Invalid signal: {response['signal']}[/yellow]")
                 response['signal'] = 'HOLD'
-            
-            # Price validations
+
+            # For HOLD signals, set all price levels to 0
+            # if response['signal'] == 'HOLD':
+            #     # response['entry_price'] = 0
+            #     # response['stop_loss'] = 0
+            #     # response['take_profit'] = 0
+            #     # Don't modify confidence - let the model's confidence value stand
+            #     if 'position_management' not in response:
+            #         response['position_management'] = {
+            #             'action': 'MAINTAIN',
+            #             'stop_loss_adjustment': 'None',
+            #             'take_profit_adjustment': 'None',
+            #             'risk_reward_ratio': 0.0
+            #         }
+            #     return response
+
+            # Validate confidence
+            if not isinstance(response['confidence'], (int, float)) or not 0 <= response['confidence'] <= 1:
+                console.print(f"[yellow]Warning: Invalid confidence value: {response['confidence']}[/yellow]")
+                response['confidence'] = 0.0
+
+            # Validate price levels
             for field in ['entry_price', 'stop_loss', 'take_profit']:
                 if not isinstance(response[field], (int, float)):
                     try:
@@ -179,10 +198,63 @@ class GeminiModel:
                     except (ValueError, TypeError):
                         console.print(f"[yellow]Warning: Invalid {field}: {response[field]}[/yellow]")
                         response[field] = 0.0
+
+            # Validate entry price relative to current price
+            current_price = response.get('current_price', 0)
+            if current_price > 0:
+                if response['signal'] == 'BUY' and response['entry_price'] > current_price:
+                    console.print(f"[yellow]Warning: Invalid entry price for LONG position: {response['entry_price']} > {current_price}[/yellow]")
+                    response['entry_price'] = current_price
+                elif response['signal'] == 'SELL' and response['entry_price'] < current_price:
+                    console.print(f"[yellow]Warning: Invalid entry price for SHORT position: {response['entry_price']} < {current_price}[/yellow]")
+                    response['entry_price'] = current_price
+
+            # Validate reasoning
+            if not isinstance(response['reasoning'], str) or len(response['reasoning']) < 50:
+                console.print("[yellow]Warning: Invalid or too short reasoning[/yellow]")
+                response['reasoning'] = "Error generating signal"
+
+            # Validate SMC patterns in reasoning
+            smc_keywords = ['order block', 'fair value gap', 'liquidity', 'smart money', 'market structure']
+            if not any(keyword in response['reasoning'].lower() for keyword in smc_keywords):
+                console.print("[yellow]Warning: Reasoning does not mention SMC patterns[/yellow]")
+
+            # Validate risk-reward ratio
+            entry = response['entry_price']
+            sl = response['stop_loss']
+            tp = response['take_profit']
             
+            if response['signal'] == 'BUY':
+                risk = abs(entry - sl)
+                reward = abs(tp - entry)
+                if risk == 0:
+                    console.print("[yellow]Warning: Invalid risk calculation (zero risk)[/yellow]")
+                    return self._get_default_response()
+                rr_ratio = reward / risk
+                if rr_ratio < 1.0:  # Minimum 1:1 for scalping
+                    console.print(f"[yellow]Warning: Risk-reward ratio {rr_ratio:.2f} below minimum 1:1[/yellow]")
+            elif response['signal'] == 'SELL':
+                risk = abs(entry - sl)
+                reward = abs(entry - tp)
+                if risk == 0:
+                    console.print("[yellow]Warning: Invalid risk calculation (zero risk)[/yellow]")
+                    return self._get_default_response()
+                rr_ratio = reward / risk
+                if rr_ratio < 1.0:  # Minimum 1:1 for scalping
+                    console.print(f"[yellow]Warning: Risk-reward ratio {rr_ratio:.2f} below minimum 1:1[/yellow]")
+
+            # Add position management details if not present
+            if 'position_management' not in response:
+                response['position_management'] = {
+                    'action': 'MAINTAIN',
+                    'stop_loss_adjustment': 'None',
+                    'take_profit_adjustment': 'None',
+                    'risk_reward_ratio': rr_ratio
+                }
+
             console.print("[bold green]Response validation successful[/bold green]")
             return response
-            
+
         except Exception as e:
             console.print(f"[bold red]Error validating response: {str(e)}[/bold red]")
             return self._get_default_response()
@@ -192,37 +264,80 @@ class GeminiModel:
         try:
             # Get current price and basic market data
             current_price = market_context.get('current_price', 0)
-            technical_indicators = market_context.get('technical_indicators', {})
             active_positions = market_context.get('active_positions', [])
-            market_data = market_context.get('market_data', {})
-            analysis = market_context.get('analysis', [])
+            smc_data = market_context.get('smc_data', {})
             
             # Create base market context
-            prompt = f"""You are a cryptocurrency trading analyst. Analyze the market data and provide a trading signal in STRICT JSON format.
+            prompt = f"""You are an expert cryptocurrency scalping analyst specializing in Smart Money Concepts (SMC) and technical analysis. Your goal is to identify high-probability trading opportunities in short-term price movements.
 
-                    CURRENT MARKET CONDITIONS:
-                    Current Price: ${current_price}
+            Key Requirements:
+            1. Focus on short-term price movements (5m to 15m timeframes)
+            2. Identify clear entry points with good risk-reward ratios (minimum 1:2 for scalping)
+            3. Use this strategy to scalp the market for quick profits in 5 mins to 15 mins timeframes
+            4. Be proactive in identifying opportunities while maintaining strict risk management
+            5. PRIMARY FOCUS: Smart Money Concepts (SMC) patterns:
+            - Order Blocks: Look for recent price action forming blocks
+            - Fair Value Gaps: Identify gaps between price levels
+            - Liquidity Levels: Find areas of high liquidity (high volume nodes)
+            - Smart Money Traps: Watch for false breakouts and traps
 
-                    MARKET ANALYSIS:
-                    {chr(10).join(analysis)}
+            Risk Management Rules:
+            - Maximum risk per trade: 1% of portfolio
+            - Minimum risk-reward ratio: 1:2 for scalping
+            - Maximum daily loss: 3%
+            - Maximum concurrent positions: 3
 
-                    TECHNICAL INDICATORS:
-                    {chr(10).join([f"{name}: {value}" for name, value in technical_indicators.items()])}
-                    """
+            Confidence Calculation Guidelines:
+            - High confidence (0.7-1.0): Strong SMC pattern with technical confirmation
+            - Medium confidence (0.5-0.7): Clear SMC pattern with partial technical confirmation
+            - Low confidence (0.3-0.5): Weak SMC pattern or technical only
+            - Below 0.3: No clear setup
 
+            CURRENT MARKET CONDITIONS:
+            Current Price: ${current_price}
+
+            SMC PATTERNS:
+            Order Blocks:
+            {chr(10).join([f"- {block}" for block in smc_data.get('order_blocks', [])])}
+
+            Fair Value Gaps:
+            {chr(10).join([f"- {gap}" for gap in smc_data.get('fair_value_gaps', [])])}
+
+            Liquidity Levels:
+            {chr(10).join([f"- {level}" for level in smc_data.get('liquidity_levels', [])])}
+            """
             # Add active positions if they exist
             if active_positions:
                 prompt += "\nACTIVE POSITIONS:\n"
                 for pos in active_positions:
                     pnl = ((current_price - pos.entry_price) / pos.entry_price * 100) if pos.position_type == "LONG" else ((pos.entry_price - current_price) / pos.entry_price * 100)
-                    prompt += f"""Type: {pos.position_type}
-                                Entry: ${pos.entry_price:.2f}
-                                Current: ${current_price:.2f}
-                                Stop Loss: ${pos.stop_loss:.2f}
-                                Take Profit: ${pos.take_profit:.2f}
-                                PnL: {pnl:.2f}%
-
-                                """
+                    prompt += f"""Position ID: {pos.id}
+                                    Type: {pos.position_type}
+                                    Entry: ${pos.entry_price:.2f}
+                                    Current: ${current_price:.2f}
+                                    Stop Loss: ${pos.stop_loss:.2f}
+                                    Take Profit: ${pos.take_profit:.2f}
+                                    PnL: {pnl:.2f}%
+                                    """
+                prompt += """
+                IMPORTANT: For active positions, focus on position management. Your response should:
+                1. Monitor for stop loss or take profit hits
+                2. Consider trailing stop loss adjustments if in profit
+                3. Consider trailing take profit adjustments if close to target
+                4. Provide clear reasoning for any position management decisions
+                """
+            else:
+                prompt += """
+                IMPORTANT: No active positions. Focus on identifying new trading opportunities. Your response should:
+                1. Look for clear SMC patterns:
+                - Recent order blocks near current price
+                - Fair value gaps that need to be filled
+                - Liquidity levels that could attract price
+                2. Ensure entry price is valid (<= current price for LONG, >= current price for SHORT)
+                3. Set appropriate stop loss and take profit levels
+                4. Maintain minimum 1:1 risk-reward ratio
+                5. If no clear SMC patterns are present, explain why in the reasoning
+                """
 
             # Add response requirements
             prompt += """
@@ -231,7 +346,7 @@ class GeminiModel:
             {
                 "signal": "BUY",  // Must be exactly "BUY", "SELL", or "HOLD"
                 "confidence": 0.75,  // Number between 0 and 1
-                "entry_price": 42000.00,  // Current price for new positions
+                "entry_price": 42000.00,  // For new positions only, use current price for active positions
                 "stop_loss": 41500.00,  // Stop loss price level
                 "take_profit": 43000.00,  // Take profit price level
                 "reasoning": "Brief analysis explanation",
@@ -239,18 +354,22 @@ class GeminiModel:
                     "action": "MAINTAIN",  // Must be "UPDATE", "CLOSE", or "MAINTAIN"
                     "stop_loss_adjustment": "None",  // Adjustment explanation or "None"
                     "take_profit_adjustment": "None",  // Adjustment explanation or "None"
-                    "risk_reward_ratio": 2.5  // Must be >= 2.0
+                    "risk_reward_ratio": 2.5  // Must be >= 1.0 for scalping
                 }
             }
 
             RULES:
             1. Response MUST be valid JSON
             2. All fields are required
-            3. Price levels must be realistic
-            4. Risk:reward ratio must be >= 2.0
-            5. Confidence must be between 0 and 1
-            6. Signal must be exactly "BUY", "SELL", or "HOLD"
-            7. Position action must be exactly "UPDATE", "CLOSE", or "MAINTAIN"
+            3. For active positions, use the existing entry price
+            4. Price levels must be realistic:
+            - For LONG positions: entry_price must be <= current_price
+            - For SHORT positions: entry_price must be >= current_price
+            5. Risk:reward ratio must be >= 1.0 for scalping
+            6. Confidence must be between 0 and 1
+            7. Signal must be exactly "BUY", "SELL", or "HOLD"
+            8. Position action must be exactly "UPDATE", "CLOSE", or "MAINTAIN"
+            9. Reasoning must explain why SMC patterns are or are not present
 
             Analyze the market data and provide your signal now:"""
             
@@ -260,29 +379,29 @@ class GeminiModel:
             console.print(f"[bold red]Error formatting prompt: {str(e)}[/bold red]")
             return ""
 
-    def _parse_response(self, response_text: str) -> dict:
-        """Parse and validate the response from the model"""
-        try:
-            signal_data = json.loads(response_text)
+    # def _parse_response(self, response_text: str) -> dict:
+    #     """Parse and validate the response from the model"""
+    #     try:
+    #         signal_data = json.loads(response_text)
             
-            # Validate required fields
-            required_fields = ['signal', 'confidence', 'entry_price', 'stop_loss', 'take_profit', 'reasoning', 'position_management']
-            if not all(field in signal_data for field in required_fields):
-                raise ValueError("Missing required fields in response")
+    #         # Validate required fields
+    #         required_fields = ['signal', 'confidence', 'entry_price', 'stop_loss', 'take_profit', 'reasoning', 'position_management']
+    #         if not all(field in signal_data for field in required_fields):
+    #             raise ValueError("Missing required fields in response")
             
-            # Validate confidence range
-            if not 0 <= signal_data['confidence'] <= 1:
-                raise ValueError("Confidence must be between 0 and 1")
+    #         # Validate confidence range
+    #         if not 0 <= signal_data['confidence'] <= 1:
+    #             raise ValueError("Confidence must be between 0 and 1")
             
-            # Validate price levels
-            if signal_data['entry_price'] <= 0 or signal_data['stop_loss'] <= 0 or signal_data['take_profit'] <= 0:
-                raise ValueError("Price levels must be positive")
+    #         # Validate price levels
+    #         if signal_data['entry_price'] <= 0 or signal_data['stop_loss'] <= 0 or signal_data['take_profit'] <= 0:
+    #             raise ValueError("Price levels must be positive")
             
-            return signal_data
+    #         return signal_data
             
-        except json.JSONDecodeError as e:
-            console.print(f"[bold red]Error parsing JSON response: {str(e)}[/bold red]")
-            return self._get_default_response()
-        except Exception as e:
-            console.print(f"[bold red]Error validating response: {str(e)}[/bold red]")
-            return self._get_default_response() 
+    #     except json.JSONDecodeError as e:
+    #         console.print(f"[bold red]Error parsing JSON response: {str(e)}[/bold red]")
+    #         return self._get_default_response()
+    #     except Exception as e:
+    #         console.print(f"[bold red]Error validating response: {str(e)}[/bold red]")
+    #         return self._get_default_response() 

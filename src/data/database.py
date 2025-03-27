@@ -3,57 +3,53 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
 import os
 from dotenv import load_dotenv
-from .models import Base
+from .models import Base, Position, PositionStatus
 
 load_dotenv()
 
+def get_database_url():
+    """Get database URL from environment variables"""
+    db_host = os.getenv('DB_HOST', 'localhost')
+    db_port = os.getenv('DB_PORT', '5432')
+    db_name = os.getenv('DB_NAME', 'hummingbird')
+    db_user = os.getenv('DB_USER', 'postgres')
+    db_password = os.getenv('DB_PASSWORD', '')
+    
+    return f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+
 class DatabaseManager:
     def __init__(self):
-        self.engine = None
-        self.Session = None
-        self._initialize_connection()
-    
-    def _initialize_connection(self):
         """Initialize database connection"""
         try:
-            db_url = os.getenv('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/hummingbird')
-            self.engine = create_engine(db_url)
+            self.engine = create_engine(get_database_url())
             self.Session = sessionmaker(bind=self.engine)
-            Base.metadata.create_all(self.engine)
-            self.session = self.Session()
-        except SQLAlchemyError as e:
-            print(f"Error connecting to database: {e}")
+            self._session = None
+            
+        except Exception as e:
+            print(f"Error initializing database: {e}")
             raise
     
     def get_session(self):
-        """Get the current database session"""
-        if not self.session or not self.session.is_active:
-            self.session = self.Session()
-        return self.session
+        """Get or create a database session"""
+        if not self._session:
+            self._session = self.Session()
+        return self._session
     
     def commit(self):
-        """Commit the current transaction"""
-        try:
-            if self.session and self.session.is_active:
-                self.session.commit()
-        except Exception as e:
-            self.session.rollback()
-            raise e
+        """Commit current transaction"""
+        if self._session:
+            self._session.commit()
     
     def rollback(self):
-        """Rollback the current transaction"""
-        if self.session and self.session.is_active:
-            self.session.rollback()
+        """Rollback current transaction"""
+        if self._session:
+            self._session.rollback()
     
     def close(self):
-        """Close the current session"""
-        if self.session:
-            if self.session.is_active:
-                self.session.close()
-            self.session = None
-    
-    def __del__(self):
-        self.close()
+        """Close current session"""
+        if self._session:
+            self._session.close()
+            self._session = None
     
     def execute_query(self, query, params=None):
         """Execute a raw SQL query"""
@@ -102,39 +98,15 @@ class DatabaseManager:
             print(f"Error getting active positions: {e}")
             raise
     
-    def add_market_structure(self, market_structure_data):
-        """Add new market structure data"""
-        try:
-            session = self.get_session()
-            session.add(market_structure_data)
-            session.flush()  # Ensure the data is persisted
-            return market_structure_data
-        except SQLAlchemyError as e:
-            print(f"Error adding market structure: {e}")
-            raise
-    
-    def add_exit_signal(self, exit_signal_data):
-        """Add a new exit signal"""
-        try:
-            session = self.get_session()
-            session.add(exit_signal_data)
-            session.flush()  # Ensure the signal is persisted
-            return exit_signal_data
-        except SQLAlchemyError as e:
-            print(f"Error adding exit signal: {e}")
-            raise
-    
     def get_position_history(self, position_id):
-        """Get complete position history including market structure and exit signals"""
+        """Get position history"""
         try:
             session = self.get_session()
             position = session.query(Position).filter_by(id=position_id).first()
             if position:
                 return {
                     'position': position,
-                    'market_structure': position.market_structure,
-                    'order_blocks': position.order_blocks,
-                    'exit_signals': position.exit_signals
+                    'adjustment_history': position.adjustment_history
                 }
             return None
         except SQLAlchemyError as e:

@@ -1,13 +1,14 @@
 from datetime import datetime
 from typing import List, Optional, Dict
 from sqlalchemy.orm import Session
-from src.data.models import Position, PositionStatus, PositionType, ExitSignal, MarketStructureData
+from src.data.models import Position, PositionStatus, PositionType
 import logging
 
 class PositionManager:
     def __init__(self, db: Session):
         self.db = db
         self.logger = logging.getLogger(__name__)
+        self.config = {}  # Will be set by the main application
     
     def create_position(self,
                        symbol: str,
@@ -27,9 +28,11 @@ class PositionManager:
                 position_type=position_type
             )
             
-            # Minimum risk:reward should be 1:1.5
-            if risk_reward_ratio < 1.5:
-                self.logger.warning(f"Risk:reward ratio {risk_reward_ratio} is below minimum threshold of 1.5")
+            # Get minimum risk:reward from config
+            min_risk_reward = self.config.get('risk_management', {}).get('scalping', {}).get('min_risk_reward', 1.0)
+            
+            if risk_reward_ratio < min_risk_reward:
+                self.logger.warning(f"Risk:reward ratio {risk_reward_ratio} is below minimum threshold of {min_risk_reward}")
                 return None
             
             position = Position(
@@ -37,7 +40,7 @@ class PositionManager:
                 position_type=position_type,
                 status=PositionStatus.PENDING,
                 entry_price=entry_price,
-                current_price=entry_price,
+                current_price=entry_price,  # Use entry price as current price initially
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 size=size,
@@ -63,25 +66,69 @@ class PositionManager:
     
     def update_position_status(self,
                              position_id: int,
-                             market_structure: MarketStructureData) -> Optional[Position]:
-        """Update position status based on market structure"""
-        position = self.db.query(Position).filter(Position.id == position_id).first()
-        if not position:
+                             current_price: float) -> Optional[Position]:
+        """Update position status based on current price"""
+        try:
+            position = self.db.query(Position).filter(Position.id == position_id).first()
+            if not position:
+                return None
+            
+            # Update current price and PnL
+            position.current_price = current_price
+            position.pnl = self._calculate_pnl(position)
+            
+            # Check for stop loss or take profit hits
+            if position.position_type == PositionType.LONG:
+                if current_price <= position.stop_loss:
+                    # Close position
+                    position.status = PositionStatus.CLOSED
+                    position.closed_at = datetime.utcnow()
+                    position.closed_reason = "SL"
+                    self.logger.info(f"Closing LONG position {position_id} - Stop loss reached at {current_price}")
+                    self.db.commit()
+                    return position
+                elif current_price >= position.take_profit:
+                    # Close position
+                    position.status = PositionStatus.CLOSED
+                    position.closed_at = datetime.utcnow()
+                    position.closed_reason = "TP"
+                    self.logger.info(f"Closing LONG position {position_id} - Take profit reached at {current_price}")
+                    self.db.commit()
+                    return position
+            else:  # SHORT position
+                if current_price >= position.stop_loss:
+                    # Close position
+                    position.status = PositionStatus.CLOSED
+                    position.closed_at = datetime.utcnow()
+                    position.closed_reason = "SL"
+                    self.logger.info(f"Closing SHORT position {position_id} - Stop loss reached at {current_price}")
+                    self.db.commit()
+                    return position
+                elif current_price <= position.take_profit:
+                    # Close position
+                    position.status = PositionStatus.CLOSED
+                    position.closed_at = datetime.utcnow()
+                    position.closed_reason = "TP"
+                    self.logger.info(f"Closing SHORT position {position_id} - Take profit reached at {current_price}")
+                    self.db.commit()
+                    return position
+            
+            # If position is still open, update its status
+            if position.status == PositionStatus.PENDING:
+                position.status = PositionStatus.OPEN
+            
+            # Update trailing levels if in profit
+            # if position.status == PositionStatus.OPEN and position.pnl > 0:
+            #     self._update_trailing_levels(position, current_price)
+            
+            self.db.commit()
+            self.db.refresh(position)
+            return position
+            
+        except Exception as e:
+            self.logger.error(f"Error updating position status: {str(e)}")
+            self.db.rollback()
             return None
-        
-        # Update current price and PnL
-        position.current_price = market_structure.high  # Use high price for conservative PnL
-        position.pnl = self._calculate_pnl(position)
-        
-        # Check for stop loss or take profit
-        if position.pnl <= -position.stop_loss:
-            position.status = PositionStatus.CLOSED
-        elif position.pnl >= position.take_profit:
-            position.status = PositionStatus.CLOSED
-        
-        self.db.commit()
-        self.db.refresh(position)
-        return position
     
     def close_position(self, position_id: int) -> bool:
         """Close a position"""
@@ -97,6 +144,11 @@ class PositionManager:
     
     def _calculate_pnl(self, position: Position) -> float:
         """Calculate position PnL"""
+        min_risk_reward = self.config.get('risk_management', {}).get('scalping', {}).get('min_risk_reward', 1.0)
+        _OpeningBal =  self.config.get('position',{}).get('min_balance',100)
+        _TradeValue=30
+        _PostionSize = 0.01
+        
         if position.position_type == PositionType.LONG:
             return (position.current_price - position.entry_price) * position.size
         else:  # SHORT
@@ -173,192 +225,139 @@ class PositionManager:
             return None
     
     def update_position_with_analysis(self,
-                                  position_id: int,
-                                  signal: Dict,
-                                  market_structure: Optional[MarketStructureData] = None) -> Optional[Position]:
-        """Update position with model's analysis and recommendations"""
+                                    position_id: int,
+                                    current_price: float,
+                                    signal: Dict = None,
+                                    market_structure: Dict = None) -> Optional[Position]:
+        """Update position with current price and check for SL/TP hits"""
         try:
-            position = self.db.query(Position).filter(Position.id == position_id).first()
+            position = self.db.query(Position).filter_by(id=position_id).first()
             if not position:
                 self.logger.error(f"Position {position_id} not found")
                 return None
-            
-            # Update position with model's analysis
-            position.last_analysis_time = datetime.utcnow()
-            position.model_confidence = signal.get('confidence', 0.0)
-            position.analysis_reasoning = signal.get('reasoning', '')
-            
-            # Handle position management recommendations
-            position_management = signal.get('position_management', {})
-            action = position_management.get('action', 'MAINTAIN')
-            
-            # Update take profit if adjustment is recommended
-            take_profit_adjustment = position_management.get('take_profit_adjustment')
-            if take_profit_adjustment and 'to' in take_profit_adjustment:
-                try:
-                    new_take_profit = float(''.join(filter(str.isdigit, take_profit_adjustment)))
-                    if new_take_profit > 0:
-                        position.take_profit = new_take_profit
-                        self.logger.info(f"Updated take profit to {new_take_profit}")
-                except ValueError:
-                    self.logger.warning(f"Could not parse take profit adjustment: {take_profit_adjustment}")
-            
-            # Update stop loss if adjustment is recommended
-            stop_loss_adjustment = position_management.get('stop_loss_adjustment')
-            if stop_loss_adjustment and stop_loss_adjustment.lower() != 'none':
-                try:
-                    new_stop_loss = float(''.join(filter(str.isdigit, stop_loss_adjustment)))
-                    if new_stop_loss > 0:
-                        position.stop_loss = new_stop_loss
-                        self.logger.info(f"Updated stop loss to {new_stop_loss}")
-                except ValueError:
-                    self.logger.warning(f"Could not parse stop loss adjustment: {stop_loss_adjustment}")
-            
-            # Update risk:reward ratio
-            position.risk_reward_ratio = position_management.get('risk_reward_ratio', position.risk_reward_ratio)
-            
-            # Store adjustment history
-            adjustment = {
-                'timestamp': datetime.utcnow().isoformat(),
-                'action': action,
-                'stop_loss_adjustment': stop_loss_adjustment,
-                'take_profit_adjustment': take_profit_adjustment,
-                'confidence': signal.get('confidence', 0.0),
-                'reasoning': signal.get('reasoning', ''),
-                'risk_reward_ratio': position.risk_reward_ratio
-            }
-            
-            if position.adjustment_history is None:
-                position.adjustment_history = []
-            position.adjustment_history.append(adjustment)
-            
-            # Update last adjustment reason
-            position.last_adjustment_reason = f"{action}: {signal.get('reasoning', '')}"
-            
-            # Check if position should be closed based on price targets
-            current_price = signal.get('current_price', position.current_price)
+
+            # If position is already closed, don't update it
+            if position.status == PositionStatus.CLOSED:
+                self.logger.info(f"Position {position_id} is already closed, skipping update")
+                return position
+
+            # Update current price and PnL
             position.current_price = current_price
-            
+            position.pnl = self._calculate_pnl(position)
+
+            # Check for stop loss or take profit hits first
             if position.position_type == PositionType.LONG:
-                if current_price >= position.take_profit:
+                if current_price <= position.stop_loss:
+                    # Close position
                     position.status = PositionStatus.CLOSED
-                    self.logger.info(f"Closing LONG position {position_id} - Take profit reached")
-                    self.create_exit_signal(
-                        position_id=position_id,
-                        signal_type="TAKE_PROFIT",
-                        price=current_price,
-                        reason="Take profit target reached",
-                        confidence=position.model_confidence,
-                        model_analysis=signal.get('reasoning', '')
-                    )
-                elif current_price <= position.stop_loss:
+                    position.closed_at = datetime.utcnow()
+                    position.closed_reason = "SL"
+                    self.logger.info(f"Closing LONG position {position_id} - Stop loss reached at {current_price}")
+                    self.db.commit()
+                    return position
+                elif current_price >= position.take_profit:
+                    # Close position
                     position.status = PositionStatus.CLOSED
-                    self.logger.info(f"Closing LONG position {position_id} - Stop loss reached")
-                    self.create_exit_signal(
-                        position_id=position_id,
-                        signal_type="STOP_LOSS",
-                        price=current_price,
-                        reason="Stop loss triggered",
-                        confidence=position.model_confidence,
-                        model_analysis=signal.get('reasoning', '')
-                    )
+                    position.closed_at = datetime.utcnow()
+                    position.closed_reason = "TP"
+                    self.logger.info(f"Closing LONG position {position_id} - Take profit reached at {current_price}")
+                    self.db.commit()
+                    return position
             else:  # SHORT position
-                if current_price <= position.take_profit:
+                if current_price >= position.stop_loss:
+                    # Close position
                     position.status = PositionStatus.CLOSED
-                    self.logger.info(f"Closing SHORT position {position_id} - Take profit reached")
-                    self.create_exit_signal(
-                        position_id=position_id,
-                        signal_type="TAKE_PROFIT",
-                        price=current_price,
-                        reason="Take profit target reached",
-                        confidence=position.model_confidence,
-                        model_analysis=signal.get('reasoning', '')
-                    )
-                elif current_price >= position.stop_loss:
+                    position.closed_at = datetime.utcnow()
+                    position.closed_reason = "SL"
+                    self.logger.info(f"Closing SHORT position {position_id} - Stop loss reached at {current_price}")
+                    self.db.commit()
+                    return position
+                elif current_price <= position.take_profit:
+                    # Close position
                     position.status = PositionStatus.CLOSED
-                    self.logger.info(f"Closing SHORT position {position_id} - Stop loss reached")
-                    self.create_exit_signal(
-                        position_id=position_id,
-                        signal_type="STOP_LOSS",
-                        price=current_price,
-                        reason="Stop loss triggered",
-                        confidence=position.model_confidence,
-                        model_analysis=signal.get('reasoning', '')
-                    )
-            
-            # Calculate and update position strength
-            if market_structure is not None:
-                position.position_strength = self._calculate_position_strength(position, market_structure)
-            else:
-                position.position_strength = position.model_confidence
-            
-            self.db.commit()
-            self.logger.info(f"Successfully updated position {position_id} with analysis")
+                    position.closed_at = datetime.utcnow()
+                    position.closed_reason = "TP"
+                    self.logger.info(f"Closing SHORT position {position_id} - Take profit reached at {current_price}")
+                    self.db.commit()
+                    return position
+
+            # Only update analysis data if position is still open
+            if position.status != PositionStatus.CLOSED:
+                # Update position with signal data if provided
+                if signal:
+                    position.model_confidence = signal.get('confidence', 0.0)
+                    position.analysis_reasoning = signal.get('reasoning', '')
+                    position.last_analysis_time = datetime.utcnow()
+                    
+                    # Update position strength if market structure is provided
+                    if market_structure:
+                        position.position_strength = self._calculate_position_strength(position, market_structure)
+
+                # If position is still pending, update its status to open
+                if position.status == PositionStatus.PENDING:
+                    position.status = PositionStatus.OPEN
+
+                self.db.commit()
+                self.logger.info(f"Successfully updated position {position_id} with analysis")
+
             return position
-            
+
         except Exception as e:
             self.logger.error(f"Error updating position with analysis: {str(e)}")
             self.db.rollback()
             return None
 
-    def _calculate_position_strength(self, position: Position, market_structure: MarketStructureData) -> float:
-        """Calculate position strength based on market structure and model confidence"""
+    def _update_trailing_levels(self, position: Position, current_price: float) -> None:
+        """Update trailing stop loss and take profit levels based on profitability"""
         try:
-            # Base strength starts with model confidence
-            strength = position.model_confidence
+            pnl_percentage = abs((current_price - position.entry_price) / position.entry_price)
             
-            # Adjust based on risk-reward ratio
-            if position.risk_reward_ratio >= 2.0:
-                strength *= 1.2
-            elif position.risk_reward_ratio < 1.0:
-                strength *= 0.8
+            # Get trailing stop distance from config (2% default)
+            trailing_stop_distance = 0.02
             
-            # Adjust based on market structure if available
-            if hasattr(market_structure, 'structure_type'):
-                if position.position_type == PositionType.LONG:
-                    if market_structure.structure_type == MarketStructure.BULLISH:
-                        strength *= 1.2
-                    elif market_structure.structure_type == MarketStructure.BEARISH:
-                        strength *= 0.8
-                else:  # SHORT position
-                    if market_structure.structure_type == MarketStructure.BEARISH:
-                        strength *= 1.2
-                    elif market_structure.structure_type == MarketStructure.BULLISH:
-                        strength *= 0.8
+            if position.position_type == PositionType.LONG:
+                # Calculate new stop loss
+                new_stop = current_price * (1 - trailing_stop_distance)
+                if new_stop > position.stop_loss:
+                    position.stop_loss = new_stop
+                    self.logger.info(f"Updated trailing stop loss to {new_stop}")
+                
+                # Calculate new take profit if close to target
+                if current_price >= position.take_profit * 0.95:  # Within 5% of target
+                    new_target = current_price * (1 + trailing_stop_distance)
+                    if new_target > position.take_profit:
+                        position.take_profit = new_target
+                        self.logger.info(f"Updated trailing take profit to {new_target}")
             
-            # Cap strength between 0 and 1
-            return min(max(strength, 0.0), 1.0)
+            else:  # SHORT position
+                # Calculate new stop loss
+                new_stop = current_price * (1 + trailing_stop_distance)
+                if new_stop < position.stop_loss:
+                    position.stop_loss = new_stop
+                    self.logger.info(f"Updated trailing stop loss to {new_stop}")
+                
+                # Calculate new take profit if close to target
+                if current_price <= position.take_profit * 1.05:  # Within 5% of target
+                    new_target = current_price * (1 - trailing_stop_distance)
+                    if new_target < position.take_profit:
+                        position.take_profit = new_target
+                        self.logger.info(f"Updated trailing take profit to {new_target}")
+            
+            # Record the adjustment in history
+            adjustment = {
+                'timestamp': datetime.utcnow(),
+                'type': 'trailing_adjustment',
+                'pnl_percentage': pnl_percentage,
+                'new_stop_loss': position.stop_loss,
+                'new_take_profit': position.take_profit
+            }
+            
+            if not position.adjustment_history:
+                position.adjustment_history = []
+            position.adjustment_history.append(adjustment)
             
         except Exception as e:
-            self.logger.error(f"Error calculating position strength: {str(e)}")
-            # Return model confidence as fallback
-            return position.model_confidence
-
-    def create_exit_signal(self,
-                          position_id: int,
-                          signal_type: str,
-                          price: float,
-                          reason: str,
-                          confidence: float = 0.0,
-                          model_analysis: str = None) -> Optional[ExitSignal]:
-        """Create a new exit signal with model analysis"""
-        try:
-            exit_signal = ExitSignal(
-                position_id=position_id,
-                signal_type=signal_type,
-                price=price,
-                reason=reason,
-                confidence=confidence,
-                model_analysis=model_analysis
-            )
-            self.db.add(exit_signal)
-            self.db.commit()
-            return exit_signal
-            
-        except Exception as e:
-            self.logger.error(f"Error creating exit signal: {str(e)}")
-            self.db.rollback()
-            return None
+            self.logger.error(f"Error updating trailing levels: {str(e)}")
 
     def _calculate_risk_reward_ratio(self, entry_price: float, stop_loss: float, take_profit: float, position_type: PositionType) -> float:
         """Calculate and validate risk:reward ratio"""
@@ -380,4 +379,67 @@ class PositionManager:
             
         except Exception as e:
             self.logger.error(f"Error calculating risk:reward ratio: {str(e)}")
+            return 0.0
+
+    def validate_position(self, entry_price: float, stop_loss: float, take_profit: float, position_type: PositionType) -> bool:
+        """Validate position parameters"""
+        try:
+            # Calculate and validate risk:reward ratio
+            risk_reward_ratio = self._calculate_risk_reward_ratio(
+                entry_price, stop_loss, take_profit, position_type
+            )
+            
+            # Get minimum risk:reward from config
+            min_risk_reward = self.config.get('risk_management', {}).get('scalping', {}).get('min_risk_reward', 1.0)
+            
+            # Validate risk:reward ratio
+            if risk_reward_ratio < min_risk_reward:
+                self.logger.warning(f"Risk:reward ratio {risk_reward_ratio} is below minimum threshold of {min_risk_reward}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error validating position: {str(e)}")
+            return False
+
+    def _calculate_position_strength(self, position: Position, market_structure: Dict = None) -> float:
+        """Calculate the strength of a position based on market structure and other factors"""
+        try:
+            strength = 0.0
+            current_price = position.current_price
+            
+            # Base strength on risk:reward ratio (up to 0.4)
+            min_rr = self.config.get('risk_management', {}).get('scalping', {}).get('min_risk_reward', 1.0)
+            rr_strength = min(position.risk_reward_ratio / min_rr, 1.0) * 0.4
+            strength += rr_strength
+            
+            # Add strength based on PnL (up to 0.3)
+            if position.pnl > 0:
+                pnl_strength = min(abs(position.pnl) / 0.02, 1.0) * 0.3  # Max strength at 2% profit
+                strength += pnl_strength
+            
+            # Add strength based on market structure if available (up to 0.3)
+            if market_structure:
+                # Check if price is near key levels
+                for level in market_structure.get('key_levels', []):
+                    level_price = level.get('price', 0)
+                    if abs(current_price - level_price) / current_price < 0.001:  # Within 0.1%
+                        strength += 0.1
+                
+                # Check if price is in a high probability zone
+                for zone in market_structure.get('high_probability_zones', []):
+                    zone_price = zone.get('price', 0)
+                    if abs(current_price - zone_price) / current_price < 0.001:  # Within 0.1%
+                        strength += 0.1
+                
+                # Check for SMC patterns
+                if market_structure.get('smc_patterns'):
+                    strength += 0.1
+            
+            # Cap total strength at 1.0
+            return min(strength, 1.0)
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating position strength: {str(e)}")
             return 0.0 
