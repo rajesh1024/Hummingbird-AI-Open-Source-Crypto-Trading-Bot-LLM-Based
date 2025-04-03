@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  postgres:
+    container_name: hummingbird-db
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=hummingbird
+      - POSTGRES_PASSWORD=hummingbird
+      - POSTGRES_DB=hummingbird
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hummingbird"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    container_name: hummingbird-backend
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://hummingbird:hummingbird@postgres:5432/hummingbird
+      - POSTGRES_USER=hummingbird
+      - POSTGRES_PASSWORD=hummingbird
+      - POSTGRES_DB=hummingbird
+      - POSTGRES_HOST=postgres
+    volumes:
+      - .:/app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  frontend:
+    container_name: hummingbird-frontend
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ./frontend-new:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: hummingbird_postgres_data 

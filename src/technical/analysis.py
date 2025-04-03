@@ -41,9 +41,9 @@ class TechnicalAnalysis:
             # Set minimum required points based on timeframe
             timeframe = df.index.name if hasattr(df.index, 'name') else 'unknown'
             if timeframe == '1h':
-                min_required_points = 24  # 1 day of hourly data
+                min_required_points = 48  # 2 days of hourly data
             elif timeframe == '4h':
-                min_required_points = 20  # ~3 days of 4h data
+                min_required_points = 30  # 5 days of 4h data
             elif timeframe == '1d':
                 min_required_points = 20  # 20 days
             elif timeframe == '15m':
@@ -135,6 +135,7 @@ class TechnicalAnalysis:
                 df['EMA_8'] = ta.ema(df['close'], length=8)    # Short-term trend
                 df['EMA_21'] = ta.ema(df['close'], length=21)
                 df['EMA_50'] = ta.ema(df['close'], length=50)  # Long-term trend
+                df['SMA_20'] = ta.sma(df['close'], length=20)  # Add SMA_20
             except Exception as e:
                 self.logger.error(f"Error calculating EMAs: {str(e)}")
                 return pd.DataFrame()
@@ -280,7 +281,7 @@ class TechnicalAnalysis:
                     }
                     order_blocks.append(ob)
                     self.order_blocks.append(ob)
-                    self.logger.info(f"Confirmed bullish order block at {df.index[i]} in {timeframe}")
+                    # self.logger.info(f"Confirmed bullish order block at {df.index[i]} in {timeframe}")
             
             # Bearish Order Block (ICT principles with more lenient conditions for 5m)
             if (df['close'].iloc[i] < df['open'].iloc[i] and  # Bearish candle
@@ -301,7 +302,7 @@ class TechnicalAnalysis:
                     }
                     order_blocks.append(ob)
                     self.order_blocks.append(ob)
-                    self.logger.info(f"Confirmed bearish order block at {df.index[i]} in {timeframe}")
+                    # self.logger.info(f"Confirmed bearish order block at {df.index[i]} in {timeframe}")
         
         # Sort by strength and return more blocks for 5m
         order_blocks.sort(key=lambda x: x['strength'], reverse=True)

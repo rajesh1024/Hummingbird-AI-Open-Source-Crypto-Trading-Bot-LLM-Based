@@ -13,6 +13,11 @@ from rich.layout import Layout
 from datetime import datetime
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+import asyncio
+import urllib.parse
+import webbrowser
+# import pywhatkit
+
 
 from src.data.market_data import MarketData
 from src.data.models import Position, PositionStatus, PositionType
@@ -346,8 +351,7 @@ class Hummingbird:
                             'demand_zones': [],
                             'smart_money_traps': []
                         }),
-                        'active_positions': [],
-                        'config': self.config  # Add config
+                        'active_positions': []
                     }
                     
                     # Get active positions for context
@@ -588,8 +592,72 @@ class Hummingbird:
         finally:
             self.db.close()
 
+    async def generate_signals(self):
+        """Generate trading signals asynchronously"""
+        try:
+            while True:
+                # Get market data
+                market_data = await self.market_data.get_latest_data()
+                
+                # Perform technical analysis
+                technical_analysis = await self.technical_analysis.analyze(market_data)
+                
+                # Analyze market structure
+                structure_analysis = await self.market_analyzer.analyze(market_data)
+                
+                # Generate LLM analysis
+                llm_analysis = await self.llm_analyzer.analyze(
+                    market_data=market_data,
+                    technical_analysis=technical_analysis,
+                    structure_analysis=structure_analysis
+                )
+                
+                # Combine analyses
+                signal = {
+                    "timestamp": datetime.now().isoformat(),
+                    "symbol": self.symbol,
+                    "technical_analysis": technical_analysis,
+                    "structure_analysis": structure_analysis,
+                    "llm_analysis": llm_analysis,
+                    "market_data": market_data
+                }
+                
+                # Yield the signal
+                yield signal
+                
+                # Wait for the next interval
+                await asyncio.sleep(self.signal_interval)
+                
+        except Exception as e:
+            logger.error(f"Error generating signals: {str(e)}")
+            raise
+
+def send_whatsapp_message(phone_number, message):
+        """Opens a WhatsApp chat with a pre-filled message.
+
+        Args:
+            phone_number: The phone number (with country code) to send the message to.
+            message: The message to pre-fill.
+        """
+        try:
+            # Encode the message for URL safety
+            encoded_message = urllib.parse.quote(message)
+
+            # Construct the wa.me link
+            whatsapp_link = f"http://wa.me/{phone_number}?text={encoded_message}"
+
+            # Open the link in the default web browser
+            webbrowser.open_new_tab(whatsapp_link)
+
+            print(f"Opened WhatsApp chat with {phone_number}. Please send the message manually.")
+
+        except Exception as e:
+            print(f"An error occurred: {e}")
+
+
 def main():
     """Main entry point"""
+    # send_whatsapp_message("+919515103511", "test message")
     parser = argparse.ArgumentParser(description="Hummingbird Trading System")
     parser.add_argument("--symbol", type=str, default="BTC/USDT", help="Trading symbol")
     parser.add_argument("--model", type=str, default="local", help="LLM model to use")

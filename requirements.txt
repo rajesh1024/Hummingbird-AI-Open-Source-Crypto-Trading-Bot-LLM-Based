@@ -31,4 +31,13 @@ python-dotenv==1.0.1
 pyyaml==6.0.1
 
 # Optional: TA-Lib
-# ta-lib>=0.4.28  # Requires TA-Lib C library. Install with: brew install ta-lib (macOS) or apt-get install ta-lib (Linux) 
+# ta-lib>=0.4.28  # Requires TA-Lib C library. Install with: brew install ta-lib (macOS) or apt-get install ta-lib (Linux)
+
+streamlit>=1.32.0
+sqlalchemy>=2.0.0
+python-dotenv>=1.0.0
+rich>=13.7.0
+numpy>=1.26.0 
+fastapi>=0.115.0
+uvicorn>=0.31.0
+websockets>=13.0

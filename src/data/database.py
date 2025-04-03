@@ -4,16 +4,24 @@ from sqlalchemy.exc import SQLAlchemyError
 import os
 from dotenv import load_dotenv
 from .models import Base, Position, PositionStatus
+from typing import List, Dict, Optional
+from datetime import datetime
 
 load_dotenv()
 
 def get_database_url():
-    """Get database URL from environment variables"""
-    db_host = os.getenv('DB_HOST', 'localhost')
+    """Get database URL from environment variables or use Docker default"""
+    # Check for Docker environment variable first
+    database_url = os.getenv('DATABASE_URL')
+    if database_url:
+        return database_url
+        
+    # Fallback to individual components
+    db_host = os.getenv('POSTGRES_HOST', 'localhost')
     db_port = os.getenv('DB_PORT', '5432')
-    db_name = os.getenv('DB_NAME', 'hummingbird')
-    db_user = os.getenv('DB_USER', 'postgres')
-    db_password = os.getenv('DB_PASSWORD', '')
+    db_name = os.getenv('POSTGRES_DB', 'hummingbird')
+    db_user = os.getenv('POSTGRES_USER', 'postgres')
+    db_password = os.getenv('POSTGRES_PASSWORD', '')
     
     return f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 
@@ -87,16 +95,35 @@ class DatabaseManager:
             print(f"Error updating position: {e}")
             raise
     
-    def get_active_positions(self):
+    def get_active_positions(self) -> List[Dict]:
         """Get all active positions"""
         try:
             session = self.get_session()
-            return session.query(Position).filter(
+            positions = session.query(Position).filter(
                 Position.status.in_([PositionStatus.OPEN, PositionStatus.PENDING])
             ).all()
+            
+            return [
+                {
+                    'id': str(pos.id),
+                    'symbol': pos.symbol,
+                    'type': pos.position_type.value.upper(),
+                    'entry_price': float(pos.entry_price),
+                    'current_price': float(pos.current_price),
+                    'pnl': float(pos.pnl),
+                    'stop_loss': float(pos.stop_loss),
+                    'take_profit': float(pos.take_profit),
+                    'size': float(pos.size),
+                    'risk_reward_ratio': float(pos.risk_reward_ratio),
+                    'position_strength': float(pos.position_strength),
+                    'status': pos.status.value,
+                    'created_at': pos.created_at
+                }
+                for pos in positions
+            ]
         except SQLAlchemyError as e:
             print(f"Error getting active positions: {e}")
-            raise
+            return []
     
     def get_position_history(self, position_id):
         """Get position history"""
@@ -111,4 +138,57 @@ class DatabaseManager:
             return None
         except SQLAlchemyError as e:
             print(f"Error getting position history: {e}")
-            raise 
+            raise
+
+    def get_closed_positions(
+        self,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        symbol: Optional[str] = None,
+        type: Optional[str] = None
+    ) -> List[Dict]:
+        """Get closed positions with optional filtering"""
+        try:
+            query = self.get_session().query(Position).filter(Position.status == PositionStatus.CLOSED)
+            
+            if start_date:
+                query = query.filter(Position.closed_at >= start_date)
+            if end_date:
+                query = query.filter(Position.closed_at <= end_date)
+            if symbol:
+                query = query.filter(Position.symbol == symbol)
+            if type:
+                query = query.filter(Position.position_type == type)
+            
+            positions = query.order_by(Position.closed_at.desc()).all()
+            
+            return [
+                {
+                    'symbol': pos.symbol,
+                    'type': pos.position_type.value.upper(),
+                    'entry_price': float(pos.entry_price),
+                    'exit_price': float(pos.current_price),
+                    'pnl': float(pos.pnl),
+                    'closed_reason': pos.closed_reason or '',
+                    'duration': self._calculate_duration(pos.created_at, pos.closed_at),
+                    'created_at': pos.created_at,
+                    'closed_at': pos.closed_at
+                }
+                for pos in positions
+            ]
+        except Exception as e:
+            print(f"Error getting closed positions: {e}")
+            return []
+
+    def _calculate_duration(self, start: datetime, end: datetime) -> str:
+        """Calculate the duration between two timestamps in a human-readable format"""
+        if not start or not end:
+            return ''
+        
+        duration = (end - start).total_seconds() / 60  # Duration in minutes
+        if duration < 60:
+            return f"{int(duration)}m"
+        else:
+            hours = int(duration / 60)
+            minutes = int(duration % 60)
+            return f"{hours}h {minutes}m" 

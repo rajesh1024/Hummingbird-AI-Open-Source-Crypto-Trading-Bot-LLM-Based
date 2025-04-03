@@ -2,3 +2,9 @@
 *.gguf
 evn/
 evn/*
+
+frontend/
+frontend/*
+src/llm/__pycache__/analyzer.cpython-311.pyc
+src/llm/__pycache__/gemini_model.cpython-311.pyc
+*.pyc

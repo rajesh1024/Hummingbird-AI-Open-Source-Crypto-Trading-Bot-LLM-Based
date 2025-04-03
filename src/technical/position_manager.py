@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional, Dict
 from sqlalchemy.orm import Session
-from src.data.models import Position, PositionStatus, PositionType
+from src.data.models import Position, PositionStatus, PositionType, AccountBalance
 import logging
 
 class PositionManager:
@@ -9,6 +9,9 @@ class PositionManager:
         self.db = db
         self.logger = logging.getLogger(__name__)
         self.config = {}  # Will be set by the main application
+        self.min_lot_size = 0.01  # Minimum lot size (1% of account)
+        self.max_lot_size = 0.05  # Maximum lot size (5% of account)
+        self.base_lot_size = 0.02  # Base lot size (2% of account)
     
     def create_position(self,
                        symbol: str,
@@ -17,7 +20,8 @@ class PositionManager:
                        stop_loss: float,
                        take_profit: float,
                        size: float,
-                       timeframe: str) -> Optional[Position]:
+                       timeframe: str,
+                       confidence: float = 0.5) -> Optional[Position]:
         """Create a new trading position"""
         try:
             # Calculate and validate risk:reward ratio
@@ -34,6 +38,15 @@ class PositionManager:
             if risk_reward_ratio < min_risk_reward:
                 self.logger.warning(f"Risk:reward ratio {risk_reward_ratio} is below minimum threshold of {min_risk_reward}")
                 return None
+
+            # Get account balance
+            account_balance = self.db.query(AccountBalance).first()
+            if not account_balance:
+                self.logger.warning("No account balance found, using minimum lot size")
+                lot_size = self.min_lot_size
+            else:
+                # Calculate lot size based on confidence and account balance
+                lot_size = self.calculate_lot_size(confidence, account_balance.balance)
             
             position = Position(
                 symbol=symbol,
@@ -43,14 +56,16 @@ class PositionManager:
                 current_price=entry_price,  # Use entry price as current price initially
                 stop_loss=stop_loss,
                 take_profit=take_profit,
-                size=size,
+                size=lot_size,  # Use calculated lot size
                 timeframe=timeframe,
-                risk_reward_ratio=risk_reward_ratio
+                risk_reward_ratio=risk_reward_ratio,
+                model_confidence=confidence,
+                account_balance_id=account_balance.id if account_balance else None
             )
             self.db.add(position)
             self.db.commit()
             self.db.refresh(position)
-            self.logger.info(f"Created new position with risk:reward ratio of {risk_reward_ratio}")
+            self.logger.info(f"Created new position with risk:reward ratio of {risk_reward_ratio} and lot size of {lot_size}")
             return position
             
         except Exception as e:
@@ -75,7 +90,7 @@ class PositionManager:
             
             # Update current price and PnL
             position.current_price = current_price
-            position.pnl = self._calculate_pnl(position)
+            self.update_position_profit_loss(position)
             
             # Check for stop loss or take profit hits
             if position.position_type == PositionType.LONG:
@@ -85,6 +100,7 @@ class PositionManager:
                     position.closed_at = datetime.utcnow()
                     position.closed_reason = "SL"
                     self.logger.info(f"Closing LONG position {position_id} - Stop loss reached at {current_price}")
+                    self._update_account_balance(position)
                     self.db.commit()
                     return position
                 elif current_price >= position.take_profit:
@@ -93,6 +109,7 @@ class PositionManager:
                     position.closed_at = datetime.utcnow()
                     position.closed_reason = "TP"
                     self.logger.info(f"Closing LONG position {position_id} - Take profit reached at {current_price}")
+                    self._update_account_balance(position)
                     self.db.commit()
                     return position
             else:  # SHORT position
@@ -102,6 +119,7 @@ class PositionManager:
                     position.closed_at = datetime.utcnow()
                     position.closed_reason = "SL"
                     self.logger.info(f"Closing SHORT position {position_id} - Stop loss reached at {current_price}")
+                    self._update_account_balance(position)
                     self.db.commit()
                     return position
                 elif current_price <= position.take_profit:
@@ -110,16 +128,13 @@ class PositionManager:
                     position.closed_at = datetime.utcnow()
                     position.closed_reason = "TP"
                     self.logger.info(f"Closing SHORT position {position_id} - Take profit reached at {current_price}")
+                    self._update_account_balance(position)
                     self.db.commit()
                     return position
             
             # If position is still open, update its status
             if position.status == PositionStatus.PENDING:
                 position.status = PositionStatus.OPEN
-            
-            # Update trailing levels if in profit
-            # if position.status == PositionStatus.OPEN and position.pnl > 0:
-            #     self._update_trailing_levels(position, current_price)
             
             self.db.commit()
             self.db.refresh(position)
@@ -442,4 +457,91 @@ class PositionManager:
             
         except Exception as e:
             self.logger.error(f"Error calculating position strength: {str(e)}")
-            return 0.0 
+            return 0.0
+
+    def calculate_lot_size(self, confidence: float, account_balance: float) -> float:
+        """Calculate position size based on confidence and account balance"""
+        try:
+            # Get account balance
+            if not account_balance:
+                self.logger.warning("No account balance provided, using minimum lot size")
+                return self.min_lot_size
+
+            # Calculate base position size (2% of account)
+            base_size = account_balance * self.base_lot_size
+
+            # Adjust size based on confidence (0.0 to 1.0)
+            confidence_factor = max(0.0, min(1.0, confidence))
+            adjusted_size = base_size * confidence_factor
+
+            # Apply min/max limits
+            min_size = account_balance * self.min_lot_size
+            max_size = account_balance * self.max_lot_size
+            final_size = max(min_size, min(adjusted_size, max_size))
+
+            # Round to 2 decimal places
+            return round(final_size, 2)
+
+        except Exception as e:
+            self.logger.error(f"Error calculating lot size: {str(e)}")
+            return self.min_lot_size
+
+    def update_position_profit_loss(self, position: Position) -> None:
+        """Update position profit/loss and account balance"""
+        try:
+            if not position.account_balance:
+                self.logger.warning(f"Position {position.id} has no associated account balance")
+                return
+
+            # Calculate profit/loss
+            if position.position_type == PositionType.LONG:
+                profit_loss = (position.current_price - position.entry_price) * position.size
+            else:  # SHORT
+                profit_loss = (position.entry_price - position.current_price) * position.size
+
+            # Calculate percentage
+            profit_loss_percentage = (profit_loss / (position.entry_price * position.size)) * 100
+
+            # Update position
+            position.profit_loss = profit_loss
+            position.profit_loss_percentage = profit_loss_percentage
+
+            # If position is closed, update account balance
+            if position.status == PositionStatus.CLOSED:
+                self._update_account_balance(position)
+
+        except Exception as e:
+            self.logger.error(f"Error updating position profit/loss: {str(e)}")
+
+    def _update_account_balance(self, position: Position) -> None:
+        """Update account balance when a position is closed"""
+        try:
+            account_balance = position.account_balance
+            if not account_balance:
+                return
+
+            # Update total profit/loss
+            account_balance.total_profit_loss += position.profit_loss
+
+            # Update trade counts
+            account_balance.total_trades += 1
+            if position.profit_loss > 0:
+                account_balance.winning_trades += 1
+            elif position.profit_loss < 0:
+                account_balance.losing_trades += 1
+
+            # Update win rate
+            if account_balance.total_trades > 0:
+                account_balance.win_rate = (account_balance.winning_trades / account_balance.total_trades) * 100
+
+            # Update current balance
+            account_balance.balance += position.profit_loss
+            account_balance.last_updated = datetime.utcnow()
+
+            self.logger.info(f"Updated account balance for position {position.id}:")
+            self.logger.info(f"Profit/Loss: ${position.profit_loss:.2f}")
+            self.logger.info(f"New Balance: ${account_balance.balance:.2f}")
+            self.logger.info(f"Win Rate: {account_balance.win_rate:.2f}%")
+
+        except Exception as e:
+            self.logger.error(f"Error updating account balance: {str(e)}") 

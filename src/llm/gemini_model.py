@@ -3,6 +3,7 @@ from typing import Dict, Any
 import json
 import logging
 from rich.console import Console
+from datetime import datetime
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -11,12 +12,15 @@ class GeminiModel:
     def __init__(
         self,
         api_key: str,
-        model_name: str = "gemini-1.5-flash",
+        model_name: str = "gemini-2.0-flash",
         max_tokens: int = 2048,
         temperature: float = 0.7,
         system_prompt: str = None
     ):
         console.print("[bold cyan]Debug: Initializing Gemini model[/bold cyan]")
+        console.print(f"[cyan]Model name: {model_name}[/cyan]")
+        console.print(f"[cyan]Max tokens: {max_tokens}[/cyan]")
+        console.print(f"[cyan]Temperature: {temperature}[/cyan]")
         
         if not api_key:
             raise ValueError("API key is required")
@@ -31,7 +35,12 @@ class GeminiModel:
         
         # Configure the Gemini API
         console.print("[bold cyan]Debug: Configuring Gemini API[/bold cyan]")
-        genai.configure(api_key=self.api_key)
+        try:
+            genai.configure(api_key=self.api_key)
+            console.print("[bold green]✓ Successfully configured Gemini API[/bold green]")
+        except Exception as e:
+            console.print(f"[bold red]Error configuring Gemini API: {str(e)}[/bold red]")
+            raise
         
         try:
             # List available models and verify model name
@@ -39,11 +48,10 @@ class GeminiModel:
             # available_models = [m.name for m in genai.list_models()]
             # console.print(f"[cyan]Available models: {available_models}[/cyan]")
             
-            # Check if model_name is available, if not use gemini-pro
+            # Check if model_name is available, if not use gemini-1.5-flash
             # if model_name not in available_models:
-            #     console.print(f"[yellow]Warning: Model {model_name} not found. Falling back to gemini-pro[/yellow]")
-            #     model_name = "gemini-1.5-flash"
-            model_name = "gemini-1.5-flash"
+            #     console.print(f"[yellow]Warning: Model {model_name} not found. Using gemini-1.5-flash[/yellow]")
+            model_name = "models/gemini-2.0-flash"
             self.model_name = model_name
             console.print(f"[bold cyan]Debug: Using model: {self.model_name}[/bold cyan]")
             
@@ -56,13 +64,18 @@ class GeminiModel:
                 "candidate_count": 1,
             }
             
+            console.print("[bold cyan]Debug: Creating model with config:[/bold cyan]")
+            console.print(generation_config)
+            
             self.model = genai.GenerativeModel(
                 model_name=self.model_name,
                 generation_config=generation_config
             )
+            console.print("[bold green]✓ Successfully created model instance[/bold green]")
             
             # Test with a simple prompt
             test_prompt = "Respond with 'OK' if you can understand this message."
+            console.print(self.api_key)
             console.print(f"[bold cyan]Debug: Testing model with prompt: {test_prompt}[/bold cyan]")
             
             try:
@@ -102,18 +115,13 @@ class GeminiModel:
             console.print("\n[bold cyan]Debug: Generating response...[/bold cyan]")
             response = self.model.generate_content(prompt)
             
-            # Debug: Print raw response object
-            # console.print("\n[bold cyan]Debug: Raw response object:[/bold cyan]")
-            # console.print(f"Response type: {type(response)}")
-            # console.print(f"Response attributes: {dir(response)}")
+            # Debug: Print raw response
+            # console.print("\n[bold cyan]Debug: Raw response:[/bold cyan]")
+            # console.print(response.text)
             
             if not response:
                 console.print("[bold red]Error: No response generated[/bold red]")
                 return self._get_default_response()
-            
-            # Debug: Print raw response text
-            # console.print("\n[bold cyan]Debug: Raw response text:[/bold cyan]")
-            # console.print(response.text)
             
             try:
                 # Try to parse JSON directly
@@ -128,9 +136,9 @@ class GeminiModel:
                 if json_match:
                     try:
                         json_str = json_match.group()
-                        # console.print(f"\n[cyan]Extracted JSON string:[/cyan]\n{json_str}")
+                        console.print(f"\n[cyan]Extracted JSON string:[/cyan]\n{json_str}")
                         parsed = json.loads(json_str)
-                        # console.print("\n[bold yellow]Successfully extracted and parsed JSON[/bold yellow]")
+                        console.print("\n[bold yellow]Successfully extracted and parsed JSON[/bold yellow]")
                         return self._validate_response(parsed)
                     except Exception as extract_error:
                         console.print(f"\n[red]Error extracting JSON: {str(extract_error)}[/red]")
@@ -148,7 +156,7 @@ class GeminiModel:
         """Return a default response in case of errors"""
         return {
             "signal": "HOLD",
-            "confidence": 0.0,
+            "confidence": 0.5,
             "reasoning": "Error generating signal",
             "entry_price": 0,
             "stop_loss": 0,
@@ -262,10 +270,20 @@ class GeminiModel:
     def _format_prompt(self, market_context: dict) -> str:
         """Format the prompt with market context"""
         try:
-            # Get current price and basic market data
+            # Get market data
+            # market_data = market_context.get('market_data', {})
+            # technical_analysis = market_context.get('technical_analysis', {})
+            # structure_analysis = market_context.get('structure_analysis', {})
             current_price = market_context.get('current_price', 0)
             active_positions = market_context.get('active_positions', [])
             smc_data = market_context.get('smc_data', {})
+            
+            # Extract current price and basic market data
+            # current_price = market_data.get('current_price', 0)
+            # active_positions = market_context.get('active_positions', [])
+            
+            # Get SMC patterns from structure analysis
+            # smc_data = structure_analysis.get('smc_patterns', {})
             
             # Create base market context
             prompt = f"""You are an expert cryptocurrency scalping analyst specializing in Smart Money Concepts (SMC) and technical analysis. Your goal is to identify high-probability trading opportunities in short-term price movements.
@@ -306,6 +324,7 @@ class GeminiModel:
             Liquidity Levels:
             {chr(10).join([f"- {level}" for level in smc_data.get('liquidity_levels', [])])}
             """
+            
             # Add active positions if they exist
             if active_positions:
                 prompt += "\nACTIVE POSITIONS:\n"

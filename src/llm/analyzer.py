@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Any
 import logging
 import json
 import numpy as np
+import traceback
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
@@ -13,8 +14,12 @@ from rich.layout import Layout
 from datetime import datetime
 import os
 from dotenv import load_dotenv
+# import pywhatkit
+import webbrowser
+import urllib.parse
 
 from .gemini_model import GeminiModel
+from src.data.models import PositionType
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -35,38 +40,54 @@ class LLMAnalyzer:
         self.model = self._load_model()
         self.confidence_threshold = model_config.get('confidence_threshold', 0.3)  # Get from config
         self.default_settings = {
-            'min_risk_reward_ratio': 1.0,  # Changed from 2.0 to match config
+            'min_risk_reward_ratio': 1.5,  # Increased from 1.0 to match config
             'min_position_strength': 0.7,
             'max_positions': 3,
             'risk_per_trade': 0.01
         }
+        # Initialize these as None, will be set by the server
+        self.market_data = None
+        self.market_analyzer = None
+        self.trading_mode = None
         
     def _load_model(self):
         """
         Load the appropriate model based on configuration
         """
         try:
-            model_settings = self.model_config['models'][self.model_name]
+            # Get model settings from config
+            model_settings = self.model_config['models'].get(self.model_name)
+            if not model_settings:
+                raise ValueError(f"Model settings not found for {self.model_name}")
+            
+            # console.print(f"[bold cyan]Debug: Loading model {self.model_name} with settings:[/bold cyan]")
+            # console.print(model_settings)
             
             if model_settings['type'] == 'local':
-                # Load local Mistral model
-                with console.status("[bold green]Loading Mistral model...") as status:
-                    model = AutoModelForCausalLM.from_pretrained(
-                        model_settings['model_path'],
-                        model_type="mistral",
-                        context_length=model_settings['context_length'],
-                        max_new_tokens=model_settings['max_tokens'],
-                        temperature=model_settings['temperature'],
-                        top_p=model_settings['top_p']
-                    )
-                console.print("[bold green]✓ Mistral model loaded successfully!")
+                # Load local model
+                console.print("[bold cyan]Debug: Loading local model...[/bold cyan]")
+                model_path = model_settings['model_path']
+                if not os.path.exists(model_path):
+                    raise ValueError(f"Model file not found: {model_path}")
+                
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_path,
+                    model_type="mistral",
+                    context_length=model_settings['context_length'],
+                    max_new_tokens=model_settings['max_tokens'],
+                    temperature=model_settings['temperature'],
+                    top_p=model_settings['top_p']
+                )
+                console.print("[bold green]✓ Successfully loaded local model[/bold green]")
                 return model
                 
             elif model_settings['type'] == 'api':
+                console.print("[bold cyan]Debug: Loading Gemini API model...[/bold cyan]")
                 # Load Gemini API model
                 load_dotenv()  # Load environment variables
                 api_key = os.getenv('GEMINI_API_KEY')
                 console.print("[bold cyan]Debug: Checking Gemini API key...[/bold cyan]")
+                console.print(f"[cyan]API Key length: {len(api_key) if api_key else 0}[/cyan]")
                 if not api_key:
                     console.print("[bold red]Error: GEMINI_API_KEY not found in environment variables[/bold red]")
                     raise ValueError("Gemini API key not found in .env file")
@@ -189,6 +210,146 @@ class LLMAnalyzer:
         self.position_manager = position_manager
         self.db = db
 
+    # def generate_signal(self, market_context: dict, confidence_threshold: float = None) -> dict:
+    #     """Generate trading signal and manage positions based on model's recommendations"""
+    #     try:
+    #         console.print("\n[bold cyan]Debug: Starting signal generation...[/bold cyan]")
+            
+    #         # Handle case where market_context is a string (symbol)
+    #         if isinstance(market_context, str):
+    #             symbol = market_context
+    #             # Get market data
+    #             market_data = self.market_data.get_market_data(symbol)
+    #             if market_data is None or market_data.empty:
+    #                 console.print(f"[yellow]Warning: No market data available for {symbol}[/yellow]")
+    #                 return None
+                    
+    #             # Calculate indicators
+    #             df_with_indicators = self.technical_analysis.calculate_indicators(market_data)
+    #             if df_with_indicators is None or df_with_indicators.empty:
+    #                 console.print(f"[yellow]Warning: No indicators available for {symbol}[/yellow]")
+    #                 return None
+                    
+    #             # Get market structure analysis
+    #             market_structure = self.market_analyzer.analyze_market_structure(market_data, self.trading_mode)
+    #             if market_structure is None:
+    #                 console.print("[yellow]Warning: No market structure analysis available[/yellow]")
+    #                 return None
+                    
+    #             # Create market context dictionary
+    #             market_context = {
+    #                 "current_price": float(df_with_indicators['close'].iloc[-1]),
+    #                 "technical_indicators": {
+    #                     "RSI": float(df_with_indicators['RSI'].iloc[-1]),
+    #                     "MACD": float(df_with_indicators['MACD'].iloc[-1]),
+    #                     "MACD_Signal": float(df_with_indicators['MACD_Signal'].iloc[-1]),
+    #                     "MACD_Hist": float(df_with_indicators['MACD_Hist'].iloc[-1]),
+    #                     "EMA_8": float(df_with_indicators['EMA_8'].iloc[-1]),
+    #                     "EMA_21": float(df_with_indicators['EMA_21'].iloc[-1])
+    #                 },
+    #                 "market_structure": market_structure.get('market_structure', 'NEUTRAL'),
+    #                 "timeframe": self.trading_mode,
+    #                 "symbol": symbol,
+    #                 "smc_data": {
+    #                     "order_blocks": market_structure.get('order_blocks', []),
+    #                     "fair_value_gaps": market_structure.get('fair_value_gaps', []),
+    #                     "liquidity_levels": market_structure.get('liquidity_levels', []),
+    #                     "supply_zones": market_structure.get('supply_zones', []),
+    #                     "demand_zones": market_structure.get('demand_zones', [])
+    #                 }
+    #             }
+            
+    #         # Get current active positions if position manager is initialized
+    #         active_positions = []
+    #         if self.position_manager is not None:
+    #             try:
+    #                 active_positions = self.position_manager.get_active_positions()
+    #                 console.print("\n[bold cyan]Debug: Found active positions:[/bold cyan]")
+    #                 for pos in active_positions:
+    #                     self._display_position(pos, market_context.get('current_price', 0))
+    #             except Exception as e:
+    #                 console.print(f"[yellow]Warning: Could not fetch active positions: {str(e)}[/yellow]")
+            
+    #         # Add positions to market context if they exist
+    #         if active_positions:
+    #             market_context['active_positions'] = active_positions
+    #             console.print("\n[bold cyan]Debug: Added active positions to market context[/bold cyan]")
+    #         else:
+    #             market_context['active_positions'] = []
+    #             console.print("\n[bold cyan]Debug: No active positions found[/bold cyan]")
+            
+    #         # Generate signal from model with position context
+    #         console.print("\n[bold cyan]Debug: Generating signal from model...[/bold cyan]")
+    #         signal = self._generate_model_signal(market_context)
+            
+    #         # Debug: Print signal details
+    #         console.print("\n[bold cyan]Debug: Generated Signal Details:[/bold cyan]")
+    #         if signal:
+    #             # Create a table for better visualization
+    #             table = Table(title="Signal Analysis")
+    #             table.add_column("Parameter", style="cyan")
+    #             table.add_column("Value", style="green")
+                
+    #             table.add_row("Current Price", str(market_context["current_price"]))
+    #             table.add_row("Signal Type", str(signal.get('signal', 'N/A')))
+    #             table.add_row("Confidence", f"{signal.get('confidence', 0):.2f}")
+    #             table.add_row("Entry Price", f"{signal.get('entry_price', 0):.2f}")
+    #             table.add_row("Stop Loss", f"{signal.get('stop_loss', 0):.2f}")
+    #             table.add_row("Take Profit", f"{signal.get('take_profit', 0):.2f}")
+    #             table.add_row("Reasoning", str(signal.get('reasoning', 'N/A')))
+    #             table.add_row("Active Positions", str(len(active_positions)))
+                
+    #             if 'position_management' in signal:
+    #                 pm = signal['position_management']
+    #                 table.add_row("Position Action", str(pm.get('action', 'N/A')))
+    #                 table.add_row("Risk:Reward", f"{pm.get('risk_reward_ratio', 0):.2f}")
+                
+    #             console.print(table)
+                
+    #             # Handle position management based on signal
+    #             current_price = market_context.get('current_price', 0)
+                
+    #             if active_positions:
+    #                 # If we have active positions, manage them based on the signal
+    #                 self._handle_position_management(active_positions, signal, current_price)
+    #             else:
+    #                 # If no active positions, check if we should create a new one
+    #                 # Use provided confidence threshold or fall back to default
+    #                 threshold = confidence_threshold if confidence_threshold is not None else self.confidence_threshold
+                    
+    #                 console.print("\n[bold cyan]Debug: Position Creation Check:[/bold cyan]")
+    #                 console.print(f"Signal Confidence: {signal.get('confidence', 0):.2f}")
+    #                 console.print(f"Confidence Threshold: {threshold}")
+    #                 console.print(f"Position Manager Initialized: {self.position_manager is not None}")
+                    
+    #                 if signal.get('confidence', 0) >= threshold:
+    #                     console.print(f"\n[bold cyan]Debug: Signal confidence {signal.get('confidence', 0):.2f} meets threshold {threshold}[/bold cyan]")
+    #                     # Create new position if confidence is high enough
+    #                     if self.position_manager is not None:
+    #                         console.print("\n[bold cyan][/bold cyan]")
+    #                         new_position = self._create_new_position(signal, market_context)
+    #                         if new_position:
+    #                             console.print(f"\n[bold green]Created new position based on {signal['signal']} signal[/bold green]")
+    #                             self._display_position(new_position, current_price)
+    #                         else:
+    #                             console.print("\n[yellow]Warning: Failed to create new position[/yellow]")
+    #                     else:
+    #                         console.print("\n[yellow]Warning: Position manager not initialized, skipping position creation[/yellow]")
+    #                 else:
+    #                     console.print(f"\n[yellow]Warning: Signal confidence {signal.get('confidence', 0):.2f} below threshold {threshold}, skipping position creation[/yellow]")
+    #         else:
+    #             console.print("[bold red]No signal generated[/bold red]")
+    #             return None
+            
+    #         return signal
+            
+    #     except Exception as e:
+    #         self.logger.error(f"Error generating signal: {str(e)}")
+    #         console.print(f"[bold red]Error generating signal: {str(e)}[/bold red]")
+    #         import traceback
+    #         console.print(f"[bold red]Traceback:\n{traceback.format_exc()}[/bold red]")
+    #         return None
+
     def generate_signal(self, market_context: dict, confidence_threshold: float = None) -> dict:
         """Generate trading signal and manage positions based on model's recommendations"""
         try:
@@ -263,7 +424,7 @@ class LLMAnalyzer:
                         console.print(f"\n[bold cyan]Debug: Signal confidence {signal.get('confidence', 0):.2f} meets threshold {threshold}[/bold cyan]")
                         # Create new position if confidence is high enough
                         if self.position_manager is not None:
-                            console.print("\n[bold cyan]Debug: Attempting to create new position...[/bold cyan]")
+                            console.print("\n[bold cyan][/bold cyan]")
                             new_position = self._create_new_position(signal, market_context)
                             if new_position:
                                 console.print(f"\n[bold green]Created new position based on {signal['signal']} signal[/bold green]")
@@ -345,6 +506,27 @@ class LLMAnalyzer:
             self.logger.error(f"Error in position management: {str(e)}")
             self.db.rollback()
             raise
+    def send_whatsapp_message(phone_number, message):
+        """Opens a WhatsApp chat with a pre-filled message.
+
+        Args:
+            phone_number: The phone number (with country code) to send the message to.
+            message: The message to pre-fill.
+        """
+        try:
+            # Encode the message for URL safety
+            encoded_message = urllib.parse.quote(message)
+
+            # Construct the wa.me link
+            whatsapp_link = f"http://wa.me/{phone_number}?text={encoded_message}"
+
+            # Open the link in the default web browser
+            webbrowser.open_new_tab(whatsapp_link)
+
+            print(f"Opened WhatsApp chat with {phone_number}. Please send the message manually.")
+
+        except Exception as e:
+            print(f"An error occurred: {e}")
 
     def _create_new_position(self, signal, market_context):
         """Create a new position based on signal"""

@@ -1,0 +1,112 @@
+{"status":"success","message": {
+        "Header": {
+            "Invoice_Number": "I/2425/055960",
+            "Invoice_date": "12.03.2025",
+            "Is_Vendor_Sez": "No",
+            "Vendor_GST": "27AAFCB8930Q1Z0",
+            "Receiver_customer_GST": "27AABCC9418Q1Z2",
+            "Total_amount": "10439557",
+            "round_off_amount": "0.99",
+            "total_tax": "1592474.64",
+            "line_item_count": "16"
+        },
+        "Line_items": [
+            {
+                "s_no": "1",
+                "HSN_SAC_code": "996711",
+                "tax_percentage": "18.00",
+                "amount": "225135.96"
+            },
+            {
+                "s_no": "2",
+                "HSN_SAC_code": "996711",
+                "tax_percentage": "18.00",
+                "amount": "202858.41"
+            },
+            {
+                "s_no": "3",
+                "HSN_SAC_code": "996711",
+                "tax_percentage": "18.00",
+                "amount": "3021985.91"
+            },
+            {
+                "s_no": "4",
+                "HSN_SAC_code": "996711",
+                "tax_percentage": "18.00",
+                "amount": "42595302"
+            },
+            {
+                "s_no": "5",
+                "HSN_SAC_code": "",
+                "tax_percentage": "",
+                "amount": ""
+            },
+            {
+                "s_no": "6",
+                "HSN_SAC_code": "",
+                "tax_percentage": "",
+                "amount": ""
+            },
+            {
+                "s_no": "7",
+                "HSN_SAC_code": "",
+                "tax_percentage": "",
+                "amount": ""
+            },
+            {
+                "s_no": "8",
+                "HSN_SAC_code": "",
+                "tax_percentage": "",
+                "amount": ""
+            },
+            {
+                "s_no": "9",
+                "HSN_SAC_code": "",
+                "tax_percentage": "",
+                "amount": ""
+            },
+            {
+                "s_no": "10",
+                "HSN_SAC_code": "",
+                "tax_percentage": "",
+                "amount": ""
+            },
+            {
+                "s_no": "11",
+                "HSN_SAC_code": "",
+                "tax_percentage": "",
+                "amount": ""
+            },
+            {
+                "s_no": "12",
+                "HSN_SAC_code": "",
+                "tax_percentage": "",
+                "amount": ""
+            },
+            {
+                "s_no": "13",
+                "HSN_SAC_code": "",
+                "tax_percentage": "",
+                "amount": ""
+            },
+            {
+                "s_no": "14",
+                "HSN_SAC_code": "",
+                "tax_percentage": "",
+                "amount": ""
+            },
+            {
+                "s_no": "15",
+                "HSN_SAC_code": "",
+                "tax_percentage": "",
+                "amount": ""
+            },
+            {
+                "s_no": "16",
+                "HSN_SAC_code": "996711",
+                "tax_percentage": "18.00",
+                "amount": "2659700"
+            }
+        ]
+    }
+}

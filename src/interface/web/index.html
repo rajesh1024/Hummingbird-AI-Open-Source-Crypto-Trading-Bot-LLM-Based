@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hummingbird Trading Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Hummingbird Trading Dashboard</h1>
+            <div class="controls">
+                <select id="symbolSelect">
+                    <option value="BTC/USDT">BTC/USDT</option>
+                    <option value="ETH/USDT">ETH/USDT</option>
+                    <option value="BNB/USDT">BNB/USDT</option>
+                </select>
+                <select id="modeSelect">
+                    <option value="scalping">Scalping</option>
+                    <option value="swing">Swing</option>
+                    <option value="position">Position</option>
+                </select>
+                <button id="startBtn">Start</button>
+                <button id="stopBtn">Stop</button>
+            </div>
+        </header>
+
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="signals">Signals</button>
+            <button class="tab-btn" data-tab="positions">Positions</button>
+            <button class="tab-btn" data-tab="stats">Statistics</button>
+        </div>
+
+        <div class="tab-content active" id="signals">
+            <div class="signal-header">
+                <h2>Signal Stream</h2>
+                <span id="status" class="status-indicator">Disconnected</span>
+            </div>
+            
+            <div class="signal-content">
+                <div class="terminal-container">
+                    <div id="terminal" class="terminal"></div>
+                </div>
+                
+                <div class="signal-details">
+                    <div class="signal-metrics">
+                        <div class="metric">
+                            <label>Timestamp:</label>
+                            <span id="timestamp">-</span>
+                        </div>
+                        <div class="metric">
+                            <label>Signal:</label>
+                            <span id="signalType">-</span>
+                        </div>
+                        <div class="metric">
+                            <label>Confidence:</label>
+                            <span id="confidence">-</span>
+                        </div>
+                        <div class="metric">
+                            <label>Entry Price:</label>
+                            <span id="entryPrice">-</span>
+                        </div>
+                        <div class="metric">
+                            <label>Stop Loss:</label>
+                            <span id="stopLoss">-</span>
+                        </div>
+                        <div class="metric">
+                            <label>Take Profit:</label>
+                            <span id="takeProfit">-</span>
+                        </div>
+                    </div>
+                    
+                    <div class="signal-reasoning">
+                        <h3>Reasoning</h3>
+                        <div id="reasoning" class="reasoning-text">-</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-content" id="positions">
+            <h2>Active Positions</h2>
+            <div id="activePositions" class="positions-container">
+                <!-- Active positions will be displayed here -->
+            </div>
+        </div>
+
+        <div class="tab-content" id="stats">
+            <h2>Trading Statistics</h2>
+            <div id="tradingStats" class="stats-container">
+                <!-- Trading statistics will be displayed here -->
+            </div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html> 

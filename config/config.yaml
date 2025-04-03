@@ -15,8 +15,8 @@ trading:
           1m: 100   # 100 minutes
           5m: 50    # 50 5-minute candles
           15m: 30   # 30 15-minute candles
-          1h: 24    # 24 hours
-          4h: 12    # 12 4-hour candles
+          1h: 48    # 48 hours (2 days)
+          4h: 30    # 30 4-hour candles (5 days)
     swing:
       timeframes:
         - 1h
@@ -77,7 +77,7 @@ llm:
       system_prompt: "You are an expert cryptocurrency scalping analyst specializing in Smart Money Concepts (SMC) and technical analysis. Your goal is to identify high-probability trading opportunities in short-term price movements. Generate trading signals when you see clear entry points with good risk-reward ratios. Be proactive in identifying opportunities, but maintain strict risk management. Focus on recent price action, volume, and SMC patterns."
     gemini:
       type: "api"
-      name: "gemini-1.5-flash"
+      name: "gemini-2.0-flash"
       api_key: ${GEMINI_API_KEY}
       max_tokens: 1000
       temperature: 0.7
@@ -108,7 +108,7 @@ risk_management:
     max_position_size: 0.05  # 5% of portfolio
     max_daily_trades: 10
     stop_loss_percentage: 0.01  # 1%
-    min_risk_reward: 1.0  # Reduced minimum risk-reward ratio for scalping
+    min_risk_reward: 1.5  # Increased minimum risk-reward ratio for scalping
     take_profit_levels:
       - 0.02  # 2%
       - 0.03  # 3%
@@ -176,7 +176,7 @@ position:
   risk_per_trade: 0.01
   max_daily_loss: 0.03
   min_balance: 100
-  min_risk_reward: 1.0  # Added minimum risk-reward ratio for position management
+  min_risk_reward: 1.5  # Added minimum risk-reward ratio for position management
 
 market_structure:
   order_block:

@@ -7,42 +7,165 @@ import os
 from dotenv import load_dotenv
 from rich.console import Console
 import time
+import numpy as np
 
 console = Console()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class MarketData:
-    def __init__(self, config: Dict):
-        self.logger = logging.getLogger(__name__)
+    def __init__(self, config: dict):
+        """Initialize market data fetcher with configuration"""
         self.config = config
-        
-        load_dotenv()  # Load environment variables
-        
-        # Get API credentials
-        api_key = os.getenv('BINANCE_API_KEY')
-        api_secret = os.getenv('BINANCE_API_SECRET')
-        
-        # Validate API credentials
-        if not api_key or not api_secret:
-            raise ValueError("Binance API credentials not found in .env file")
-        
-        # Clean up API credentials (remove any whitespace or newlines)
-        api_key = api_key.strip()
-        api_secret = api_secret.strip()
-        
-        # Initialize exchange
-        self.exchange = self._initialize_exchange(api_key, api_secret)
-        
+        self.exchange = ccxt.binance({
+            'enableRateLimit': True,
+            'timeout': 30000
+        })
         self.timeframes = {
-            "1d": "1d",
-            "4h": "4h",
-            "1h": "1h",
-            "15m": "15m",
-            "5m": "5m",
-            "1m": "1m"
+            '1m': 60,
+            '5m': 300,
+            '15m': 900,
+            '1h': 3600,
+            '4h': 14400,
+            '1d': 86400
         }
-    
+        # Initialize logger
+        self.logger = logging.getLogger(__name__)
+
+    def get_market_data(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> pd.DataFrame:
+        """Fetch market data for the given symbol and timeframe"""
+        try:
+            # Fetch OHLCV data
+            ohlcv = self.exchange.fetch_ohlcv(
+                symbol,
+                timeframe=timeframe,
+                limit=limit
+            )
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(
+                ohlcv,
+                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            )
+            
+            # Convert timestamp to datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            
+            # Set timestamp as index
+            df.set_index('timestamp', inplace=True)
+            
+            # Sort by timestamp
+            df.sort_index(inplace=True)
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error fetching market data: {str(e)}")
+            return pd.DataFrame()
+
+    def get_recent_trades(self, symbol: str, limit: int = 100) -> pd.DataFrame:
+        """Fetch recent trades for the given symbol"""
+        try:
+            # Fetch recent trades
+            trades = self.exchange.fetch_trades(symbol, limit=limit)
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(trades)
+            
+            # Convert timestamp to datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            
+            # Set timestamp as index
+            df.set_index('timestamp', inplace=True)
+            
+            # Sort by timestamp
+            df.sort_index(inplace=True)
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error fetching recent trades: {str(e)}")
+            return pd.DataFrame()
+
+    def get_orderbook(self, symbol: str, limit: int = 20) -> dict:
+        """Fetch order book for the given symbol"""
+        try:
+            # Fetch order book
+            orderbook = self.exchange.fetch_order_book(symbol, limit=limit)
+            
+            # Convert to DataFrame
+            bids_df = pd.DataFrame(orderbook['bids'], columns=['price', 'amount'])
+            asks_df = pd.DataFrame(orderbook['asks'], columns=['price', 'amount'])
+            
+            return {
+                'bids': bids_df,
+                'asks': asks_df,
+                'timestamp': datetime.fromtimestamp(orderbook['timestamp'] / 1000)
+            }
+            
+        except Exception as e:
+            print(f"Error fetching order book: {str(e)}")
+            return {}
+
+    def get_ticker(self, symbol: str) -> dict:
+        """Fetch current ticker data for the given symbol"""
+        try:
+            # Fetch ticker
+            ticker = self.exchange.fetch_ticker(symbol)
+            
+            return {
+                'symbol': ticker['symbol'],
+                'last': ticker['last'],
+                'bid': ticker['bid'],
+                'ask': ticker['ask'],
+                'volume': ticker['baseVolume'],
+                'high_24h': ticker['high'],
+                'low_24h': ticker['low'],
+                'change_24h': ticker['percentage'],
+                'timestamp': datetime.fromtimestamp(ticker['timestamp'] / 1000)
+            }
+            
+        except Exception as e:
+            print(f"Error fetching ticker: {str(e)}")
+            return {}
+
+    def get_historical_data(self, symbol: str, timeframe: str, start_time: datetime, end_time: datetime) -> pd.DataFrame:
+        """Fetch historical data for the given symbol and time range"""
+        try:
+            # Calculate number of candles needed
+            timeframe_seconds = self.timeframes[timeframe]
+            total_seconds = (end_time - start_time).total_seconds()
+            num_candles = int(total_seconds / timeframe_seconds)
+            
+            # Fetch data
+            ohlcv = self.exchange.fetch_ohlcv(
+                symbol,
+                timeframe=timeframe,
+                since=int(start_time.timestamp() * 1000),
+                limit=num_candles
+            )
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(
+                ohlcv,
+                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            )
+            
+            # Convert timestamp to datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            
+            # Set timestamp as index
+            df.set_index('timestamp', inplace=True)
+            
+            # Sort by timestamp
+            df.sort_index(inplace=True)
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error fetching historical data: {str(e)}")
+            return pd.DataFrame()
+
     def get_current_price(self, symbol: str) -> float:
         """
         Get the current price directly from Binance's ticker endpoint
@@ -195,19 +318,6 @@ class MarketData:
         except Exception as e:
             console.print(f"[bold red]Error fetching latest data: {str(e)}")
             raise
-    
-    def get_orderbook(self, symbol: str) -> Dict:
-        """
-        Get current orderbook data
-        """
-        try:
-            # Ensure symbol is in correct format
-            if '/' not in symbol:
-                symbol = f"{symbol}/USDT"
-            return self.exchange.fetch_order_book(symbol)
-        except Exception as e:
-            console.print(f"[bold red]Error fetching orderbook: {str(e)}")
-            raise
 
     def _initialize_exchange(self, api_key: str, api_secret: str) -> ccxt.Exchange:
         """
@@ -233,4 +343,52 @@ class MarketData:
             
         except Exception as e:
             self.logger.error(f"Failed to initialize exchange: {str(e)}")
-            raise 
+            raise
+
+class MarketDataManager:
+    def __init__(self):
+        """Initialize market data manager"""
+        self.market_data = MarketData({
+            'exchange': 'binance',
+            'timeframes': ['1m', '5m', '15m', '1h', '4h', '1d']
+        })
+        self.symbol = "BTC/USDT"  # Default symbol
+
+    def get_market_data(self, symbol: str = None) -> Dict:
+        """Get current market data for the specified symbol"""
+        try:
+            if symbol:
+                self.symbol = symbol
+            
+            # Get current price and 24h change
+            ticker = self.market_data.get_ticker(self.symbol)
+            current_price = float(ticker['last'])
+            price_change_24h = float(ticker['change_24h'])
+
+            # Get RSI from 1h timeframe
+            df_1h = self.market_data.get_market_data(self.symbol, timeframe='1h', limit=100)
+            if not df_1h.empty:
+                rsi = float(df_1h['RSI'].iloc[-1]) if 'RSI' in df_1h.columns else 0
+            else:
+                rsi = 0
+
+            return {
+                'symbol': self.symbol,
+                'current_price': current_price,
+                'price_change_24h': price_change_24h,
+                'rsi': rsi,
+                'volume_24h': float(ticker['volume'])
+            }
+        except Exception as e:
+            logger.error(f"Error getting market data: {str(e)}")
+            return {
+                'symbol': self.symbol,
+                'current_price': 0,
+                'price_change_24h': 0,
+                'rsi': 0,
+                'volume_24h': 0
+            }
+
+    def set_symbol(self, symbol: str):
+        """Set the current trading symbol"""
+        self.symbol = symbol 
