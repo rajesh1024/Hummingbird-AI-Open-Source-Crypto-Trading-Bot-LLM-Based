@@ -51,7 +51,7 @@ try:
     hummingbird = Hummingbird(config_path)
     
     # Set default settings
-    hummingbird.symbol = "BTC/USDT"  # Set default symbol
+    hummingbird.symbol = "ETH/USDT"  # Set default symbol
     hummingbird.trading_mode = "scalping"  # Set default mode
     
     # Initialize database and position manager
@@ -397,6 +397,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     data = await asyncio.wait_for(websocket.receive_json(), timeout=5.0)
                     if data.get('type') == 'ping':
+                        await ws_manager.handle_heartbeat(client_id)
                         await websocket.send_json({'type': 'pong'})
                 except asyncio.TimeoutError:
                     # No message received, continue with updates
@@ -408,7 +409,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 # Send regular updates
                 await send_dashboard_update()
-                await asyncio.sleep(5)  # Update every 5 seconds
+                await asyncio.sleep(5)
                 
             except WebSocketDisconnect:
                 logger.info(f"Client {client_id} disconnected")

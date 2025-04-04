@@ -37,6 +37,8 @@ import SignalWifiOffIcon from '@mui/icons-material/SignalWifiOff';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import HistoryIcon from '@mui/icons-material/History';
 import UpdateIcon from '@mui/icons-material/Update';
+import TradingViewWidget from './TradingViewWidget';
+import { convertUTCToIST, formatDuration } from '../utils/dateUtils';
 
 interface Position {
   id: number;
@@ -202,6 +204,10 @@ const Dashboard: React.FC = () => {
         return 'success';
       case 'SELL':
         return 'error';
+      case 'LONG':
+        return 'success';
+      case 'SHORT':
+        return 'error';
       default:
         return 'warning';
     }
@@ -221,14 +227,6 @@ const Dashboard: React.FC = () => {
   const formatIndicator = (value: number | undefined | null) => {
     if (value === undefined || value === null) return 'N/A';
     return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  };
-
-  const formatDuration = (createdAt: string | null) => {
-    if (!createdAt) return null;
-    const created = new Date(createdAt);
-    const now = new Date();
-    const diffInMinutes = Math.floor((now.getTime() - created.getTime()) / (1000 * 60));
-    return diffInMinutes;
   };
 
   const renderAnalysisHistory = () => {
@@ -286,7 +284,7 @@ const Dashboard: React.FC = () => {
         {analysisHistory.length > 2 && (
           <Box
             sx={{
-              maxHeight: '250px',
+              maxHeight: '380px',
               overflowY: 'auto',
               mt: 2,
               '&::-webkit-scrollbar': {
@@ -430,6 +428,9 @@ const Dashboard: React.FC = () => {
               </Box>
             </Grid>
           </Grid>
+          <Grid container spacing={1} sx={{paddingTop: 3}}>
+            <TradingViewWidget />
+          </Grid>
         </CardContent>
       </Card>
     );
@@ -467,7 +468,7 @@ const Dashboard: React.FC = () => {
                 size="small"
               />
               <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-                {data?.data?.signal?.symbol || 'BTC/USDT'} • {data?.data?.signal?.timeframe || '5m'}
+                {data?.data?.signal?.symbol || 'ETH/USDT'} • {data?.data?.signal?.timeframe || '5m'}
               </Typography>
               <Chip
                 label={`${Math.round((data?.data?.signal?.confidence || 0) * 100)}% Confidence`}
@@ -533,13 +534,16 @@ const Dashboard: React.FC = () => {
                 </Typography>
               </Grid>
               <Grid item xs={6} sm={3}>
-                <Typography variant="caption" color="text.secondary">Started on</Typography>
+                <Typography variant="caption" color="text.secondary">Trade Started on</Typography>
                 <Typography variant="body2" sx={{ 
                   fontSize: { xs: '0.75rem', sm: '0.875rem' },
                   wordBreak: 'break-word'
                 }}>
                   {data?.data?.positions?.[0]?.created_at ? 
-                    `${new Date(data.data.positions[0].created_at).toLocaleString()} (${formatDuration(data.data.positions[0].created_at)}m)` 
+                    (() => {
+                      const istTime = convertUTCToIST(data.data.positions[0].created_at);
+                      return `${istTime.formatted} (${formatDuration(istTime.timestamp)}m)`;
+                    })()
                     : 'None'}
                 </Typography>
               </Grid>
@@ -893,6 +897,13 @@ const Dashboard: React.FC = () => {
                     </Grid>
                   </Grid>
                 )}
+
+                {!isMobile && (
+                  /* TradingView Chart */
+                  <Box sx={{ height: '360px', width: '100%', mt: 3 }}>
+                    <TradingViewWidget />
+                  </Box>
+                )}
               </CardContent>
             </Card>
           </Grid>
@@ -931,8 +942,17 @@ const Dashboard: React.FC = () => {
                       color={getSignalColor(data?.data?.signal?.signal)}
                       size="small"
                     />
+                    {data?.data?.positions && data.data.positions.length > 0 && (
+                     <Chip
+                      label={data?.data?.positions[0]?.position_type || 'HOLD'}
+                      color={getSignalColor(data?.data?.positions[0]?.position_type)}
+                      size="small"
+                    />
+                    
+                    )}
+                    
                     <Typography variant="body2" sx={{ fontSize: { xs: '0.8rem', sm: '0.875rem' } }}>
-                      {data?.data?.signal?.symbol || 'BTC/USDT'} • {data?.data?.signal?.timeframe || '5m'}
+                      {data?.data?.signal?.symbol || 'ETH/USDT'} • {data?.data?.signal?.timeframe || '5m'}
                     </Typography>
                     <Chip
                       label={`${Math.round((data?.data?.signal?.confidence || 0) * 100)}% Confidence`}
@@ -1014,12 +1034,16 @@ const Dashboard: React.FC = () => {
                     </Grid>
                     
               <Grid item md={6}>
-                <Typography variant="caption" color="text.secondary">Started on</Typography>
+                <Typography variant="caption" color="text.secondary">Trade Started on</Typography>
                 <Typography variant="body2" sx={{ 
-                  fontSize: { xs: '0.75rem', sm: '0.875rem' }
+                  fontSize: { xs: '0.75rem', sm: '0.875rem' },
+                  wordBreak: 'break-word'
                 }}>
                   {data?.data?.positions?.[0]?.created_at ? 
-                    `${new Date(data.data.positions[0].created_at).toLocaleString()} (${formatDuration(data.data.positions[0].created_at)}m)` 
+                    (() => {
+                      const istTime = convertUTCToIST(data.data.positions[0].created_at);
+                      return `${istTime.formatted} (${formatDuration(istTime.timestamp)}m)`;
+                    })()
                     : 'None'}
                 </Typography>
               </Grid>

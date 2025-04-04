@@ -19,8 +19,9 @@ export function useWebSocket<T>(url: string): WebSocketHook<T> {
   const reconnectAttemptsRef = useRef(0);
   const MAX_RECONNECT_ATTEMPTS = 10;
   const HEARTBEAT_INTERVAL = 30000; // 30 seconds
-  const CONNECTION_TIMEOUT = 5000; // 5 seconds
+  const CONNECTION_TIMEOUT = 15000; // 15 seconds
   const connectionTimeoutRef = useRef<NodeJS.Timeout>();
+  const isComponentMounted = useRef(true);
 
   const cleanup = useCallback(() => {
     if (connectionTimeoutRef.current) {
@@ -58,6 +59,8 @@ export function useWebSocket<T>(url: string): WebSocketHook<T> {
   }, [sendHeartbeat]);
 
   const connect = useCallback(() => {
+    if (!isComponentMounted.current) return;
+
     try {
       cleanup();
 
@@ -110,8 +113,8 @@ export function useWebSocket<T>(url: string): WebSocketHook<T> {
             setError(new Error('Connection closed. Attempting to reconnect...'));
         }
 
-        // Don't reconnect if it was a normal closure
-        if (event.code !== 1000) {
+        // Don't reconnect if it was a normal closure or component unmounted
+        if (event.code !== 1000 && isComponentMounted.current) {
           reconnectAttemptsRef.current += 1;
           const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
           console.log(`Attempting to reconnect in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
@@ -157,14 +160,17 @@ export function useWebSocket<T>(url: string): WebSocketHook<T> {
       setError(new Error('Unable to establish connection. Please check if the server is running.'));
       setLoading(false);
       
-      // Attempt to reconnect
-      reconnectAttemptsRef.current += 1;
-      const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
-      reconnectTimeoutRef.current = setTimeout(connect, delay);
+      // Attempt to reconnect if component is still mounted
+      if (isComponentMounted.current) {
+        reconnectAttemptsRef.current += 1;
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
+        reconnectTimeoutRef.current = setTimeout(connect, delay);
+      }
     }
   }, [url, startHeartbeat, cleanup]);
 
   const reconnect = useCallback(() => {
+    if (!isComponentMounted.current) return;
     cleanup();
     reconnectAttemptsRef.current = 0;
     setLoading(true);
@@ -172,8 +178,12 @@ export function useWebSocket<T>(url: string): WebSocketHook<T> {
   }, [connect, cleanup]);
 
   useEffect(() => {
+    isComponentMounted.current = true;
     connect();
-    return cleanup;
+    return () => {
+      isComponentMounted.current = false;
+      cleanup();
+    };
   }, [url, connect, cleanup]);
 
   return { data, isConnected, error, loading, reconnect };
