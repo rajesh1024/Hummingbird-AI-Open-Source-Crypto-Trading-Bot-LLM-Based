@@ -277,6 +277,8 @@ class GeminiModel:
             current_price = market_context.get('current_price', 0)
             active_positions = market_context.get('active_positions', [])
             smc_data = market_context.get('smc_data', {})
+            symbol = market_context.get('symbol', '')
+            
             
             # Extract current price and basic market data
             # current_price = market_data.get('current_price', 0)
@@ -329,13 +331,13 @@ class GeminiModel:
             if active_positions:
                 prompt += "\nACTIVE POSITIONS:\n"
                 for pos in active_positions:
-                    pnl = ((current_price - pos.entry_price) / pos.entry_price * 100) if pos.position_type == "LONG" else ((pos.entry_price - current_price) / pos.entry_price * 100)
-                    prompt += f"""Position ID: {pos.id}
-                                    Type: {pos.position_type}
-                                    Entry: ${pos.entry_price:.2f}
+                    pnl = ((current_price - pos['entry_price']) / pos['entry_price'] * 100) if pos['position_type'] == "LONG" else ((pos['entry_price'] - current_price) / pos['entry_price'] * 100)
+                    prompt += f"""Position ID: {pos['id']}
+                                    Type: {pos['position_type']}
+                                    Entry: ${pos['entry_price']:.2f}
                                     Current: ${current_price:.2f}
-                                    Stop Loss: ${pos.stop_loss:.2f}
-                                    Take Profit: ${pos.take_profit:.2f}
+                                    Stop Loss: ${pos['stop_loss']:.2f}
+                                    Take Profit: ${pos['take_profit']:.2f}
                                     PnL: {pnl:.2f}%
                                     """
                 prompt += """

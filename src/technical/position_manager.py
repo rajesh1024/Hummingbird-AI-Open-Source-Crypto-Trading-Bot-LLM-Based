@@ -418,20 +418,35 @@ class PositionManager:
             self.logger.error(f"Error validating position: {str(e)}")
             return False
 
-    def _calculate_position_strength(self, position: Position, market_structure: Dict = None) -> float:
+    def _calculate_position_strength(self, position: dict, market_structure: Dict = None) -> float:
         """Calculate the strength of a position based on market structure and other factors"""
         try:
             strength = 0.0
-            current_price = position.current_price
+            current_price = position['current_price']
+            
+            # Calculate risk:reward ratio
+            entry_price = position['entry_price']
+            stop_loss = position['stop_loss']
+            take_profit = position['take_profit']
+            
+            if position['position_type'] == "LONG":
+                risk = entry_price - stop_loss
+                reward = take_profit - entry_price
+            else:
+                risk = stop_loss - entry_price
+                reward = entry_price - take_profit
+                
+            risk_reward_ratio = reward / risk if risk != 0 else 0
             
             # Base strength on risk:reward ratio (up to 0.4)
             min_rr = self.config.get('risk_management', {}).get('scalping', {}).get('min_risk_reward', 1.0)
-            rr_strength = min(position.risk_reward_ratio / min_rr, 1.0) * 0.4
+            rr_strength = min(risk_reward_ratio / min_rr, 1.0) * 0.4
             strength += rr_strength
             
             # Add strength based on PnL (up to 0.3)
-            if position.pnl > 0:
-                pnl_strength = min(abs(position.pnl) / 0.02, 1.0) * 0.3  # Max strength at 2% profit
+            pnl = position.get('pnl', 0)
+            if pnl > 0:
+                pnl_strength = min(abs(pnl) / 0.02, 1.0) * 0.3  # Max strength at 2% profit
                 strength += pnl_strength
             
             # Add strength based on market structure if available (up to 0.3)

@@ -358,23 +358,27 @@ class LLMAnalyzer:
             # console.print(market_context)
             
             # Get current active positions if position manager is initialized
-            active_positions = []
-            if self.position_manager is not None:
-                try:
-                    active_positions = self.position_manager.get_active_positions()
-                    console.print("\n[bold cyan]Debug: Found active positions:[/bold cyan]")
-                    for pos in active_positions:
-                        self._display_position(pos, market_context.get('current_price', 0))
-                except Exception as e:
-                    console.print(f"[yellow]Warning: Could not fetch active positions: {str(e)}[/yellow]")
+            # symbol = market_context.get('symbol')
+            # mc_postion_manager = market_context.get('position_manager')
             
-            # Add positions to market context if they exist
-            if active_positions:
-                market_context['active_positions'] = active_positions
-                console.print("\n[bold cyan]Debug: Added active positions to market context[/bold cyan]")
-            else:
-                market_context['active_positions'] = []
-                console.print("\n[bold cyan]Debug: No active positions found[/bold cyan]")
+            # active_positions = []
+            active_positions = market_context.get('active_positions')
+            # if mc_postion_manager is not None:
+            #     try:
+            #         active_positions = mc_postion_manager.get_active_positions()
+            #         console.print("\n[bold cyan]Debug: Found active positions:[/bold cyan]")
+            #         for pos in active_positions:
+            #             self._display_position(pos, market_context.get('current_price', 0))
+            #     except Exception as e:
+            #         console.print(f"[yellow]Warning: Could not fetch active positions: {str(e)}[/yellow]")
+            
+            # # Add positions to market context if they exist
+            # if active_positions:
+            #     market_context['active_positions'] = active_positions
+            #     console.print("\n[bold cyan]Debug: Added active positions to market context[/bold cyan]")
+            # else:
+            #     market_context['active_positions'] = []
+            #     console.print("\n[bold cyan]Debug: No active positions found[/bold cyan]")
             
             # Generate signal from model with position context
             console.print("\n[bold cyan]Debug: Generating signal from model...[/bold cyan]")
@@ -425,7 +429,7 @@ class LLMAnalyzer:
                         # Create new position if confidence is high enough
                         if self.position_manager is not None:
                             console.print("\n[bold cyan][/bold cyan]")
-                            new_position = self._create_new_position(signal, market_context)
+                            new_position = self._create_new_position(active_positions, signal, market_context)
                             if new_position:
                                 console.print(f"\n[bold green]Created new position based on {signal['signal']} signal[/bold green]")
                                 self._display_position(new_position, current_price)
@@ -453,27 +457,28 @@ class LLMAnalyzer:
         try:
             position_management = signal.get('position_management', {})
             action = position_management.get('action', 'MAINTAIN')
-            
+            print(f"Active positions: {active_positions}")
             for position in active_positions:
                 # Update current price and PnL
-                position.current_price = current_price
-                if position.position_type == "LONG":
-                    pnl = (current_price - position.entry_price) / position.entry_price * 100
+                position['current_price'] = current_price
+
+                if position['position_type'] == "LONG":
+                    pnl = (current_price - position['entry_price']) / position['entry_price'] * 100
                 else:
-                    pnl = (position.entry_price - current_price) / position.entry_price * 100
+                    pnl = (position['entry_price'] - current_price) / position['entry_price'] * 100
                 
                 # Log position status
-                self.logger.info(f"Managing position {position.id}:")
-                self.logger.info(f"- Type: {position.position_type}")
-                self.logger.info(f"- Entry: ${position.entry_price:.2f}")
+                self.logger.info(f"Managing position {position['id']}:")
+                self.logger.info(f"- Type: {position['position_type']}")
+                self.logger.info(f"- Entry: ${position['entry_price']:.2f}")
                 self.logger.info(f"- Current: ${current_price:.2f}")
                 self.logger.info(f"- PnL: {pnl:.2f}%")
                 self.logger.info(f"- Action: {action}")
                 
                 if action == 'CLOSE':
                     # Close position if recommended
-                    self.logger.info(f"Closing position {position.id} based on model recommendation")
-                    self.position_manager.close_position(position.id)
+                    self.logger.info(f"Closing position {position['id']} based on model recommendation")
+                    self.position_manager.close_position(position['id'])
                     
                     # # Create exit signal - commented out as not needed
                     # self.position_manager.create_exit_signal(
@@ -487,14 +492,14 @@ class LLMAnalyzer:
                 else:
                     # Update position with model's analysis
                     self.position_manager.update_position_with_analysis(
-                        position_id=position.id,
+                        position_id=position['id'],
                         current_price=current_price,
                         signal=signal,
                         market_structure=signal.get('market_structure', None)
                     )
                     
                     # Update position strength
-                    position.position_strength = self.position_manager._calculate_position_strength(
+                    position['position_strength'] = self.position_manager._calculate_position_strength(
                         position,
                         signal.get('market_structure', None)
                     )
@@ -528,13 +533,20 @@ class LLMAnalyzer:
         except Exception as e:
             print(f"An error occurred: {e}")
 
-    def _create_new_position(self, signal, market_context):
+    def _create_new_position(self, active_positions, signal, market_context):
         """Create a new position based on signal"""
         try:
-            # Check if there are any active positions first
-            active_positions = self.position_manager.get_active_positions()
-            if active_positions:
-                self.logger.info(f"Skipping new position creation - {len(active_positions)} active positions exist")
+            # Check if there are any active positions for this symbol
+            symbol = market_context.get('symbol')
+            if not symbol:
+                console.print("[red]Error: No symbol found in market_context[/red]")
+                return None
+
+            # Check if there's already an active position for this symbol
+            existing_position = next((pos for pos in active_positions if pos['symbol'] == symbol), None)
+            if existing_position:
+                console.print(f"[yellow]Warning: Skipping new position creation - Active position already exists for {symbol}[/yellow]")
+                console.print(f"Existing position: ID {existing_position['id']}, Type: {existing_position['type']}, Status: {existing_position['status']}")
                 return None
 
             if signal['signal'] != "HOLD":
@@ -598,7 +610,7 @@ class LLMAnalyzer:
                         
                         # Create new position with model's recommended levels
                         position = self.position_manager.create_position(
-                            symbol=market_context.get('symbol', 'BTC/USDT'),
+                            symbol=symbol,
                             position_type=position_type,
                             entry_price=signal['entry_price'],
                             stop_loss=signal['stop_loss'],

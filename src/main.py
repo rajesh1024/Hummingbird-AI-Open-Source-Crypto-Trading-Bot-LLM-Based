@@ -142,11 +142,23 @@ class Hummingbird:
     
     def _init_position_manager(self):
         """Initialize position manager when needed"""
-        if self.position_manager is None:
-            self.db = DatabaseManager()
-            db_session = self.db.get_session()
-            self.position_manager = PositionManager(db_session)
-            self.llm_analyzer.set_position_manager(self.position_manager, self.db)
+        try:
+            if self.position_manager is None:
+                self.db = DatabaseManager()
+                db_session = self.db.get_session()
+                self.position_manager = PositionManager(db_session)
+                self.position_manager.config = self.config  # Set config in position manager
+                
+                # Set position manager in LLM analyzer if it exists
+                if hasattr(self, 'llm_analyzer') and self.llm_analyzer is not None:
+                    self.llm_analyzer.position_manager = self.position_manager
+                    self.llm_analyzer.db = self.db
+                
+                self.logger.info("Position manager initialized successfully")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error initializing position manager: {str(e)}")
+            return False
     
     def monitor_positions(self):
         """Monitor active positions and market structure"""

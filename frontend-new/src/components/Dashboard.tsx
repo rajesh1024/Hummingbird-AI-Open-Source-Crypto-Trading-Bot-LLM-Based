@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { 
   Box, 
   Grid, 
@@ -26,7 +26,9 @@ import {
   IconButton,
   Tooltip,
   CardHeader,
-  useMediaQuery
+  useMediaQuery,
+  Tabs,
+  Tab
 } from '@mui/material';
 import { useWebSocket } from '../hooks/useWebSocket';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
@@ -39,6 +41,8 @@ import HistoryIcon from '@mui/icons-material/History';
 import UpdateIcon from '@mui/icons-material/Update';
 import TradingViewWidget from './TradingViewWidget';
 import { convertUTCToIST, formatDuration } from '../utils/dateUtils';
+import SignalCellularAltIcon from '@mui/icons-material/SignalCellularAlt';
+import ShowChartIcon from '@mui/icons-material/ShowChart';
 
 interface Position {
   id: number;
@@ -46,27 +50,55 @@ interface Position {
   position_type: string;
   status: string;
   entry_price: number;
-  current_price: number | null;
-  stop_loss: number | null;
-  take_profit: number | null;
+  current_price?: number;
+  stop_loss?: number;
+  take_profit?: number;
   size: number;
   pnl: number;
-  created_at: string | null;
-  closed_at: string | null;
+  created_at: string;
+  closed_at?: string;
 }
 
 interface MarketData {
+  symbol: string;
   current_price: number;
   price_change_24h: number;
   volume_24h: number;
-  volume_4h: number;
-  volume_1h: number;
-  volume_15m: number;
-  macd: number;
-  ema: number;
-  sma: number;
-  rsi: number;
-  symbol: string;
+  technical_indicators: {
+    RSI: number;
+    MACD: {
+      MACD: number;
+      Signal: number;
+      Histogram: number;
+    };
+    EMA: {
+      EMA8: number;
+      EMA21: number;
+      EMA50: number;
+    };
+    BB: {
+      Upper: number;
+      Middle: number;
+      Lower: number;
+    };
+    Volume: {
+      '1h': number;
+      '4h': number;
+      '1d': number;
+    };
+    ATR: number;
+  };
+  trading_mode: string;
+}
+
+interface PositionManagement {
+  position_type: string;
+  entry_price: string;
+  stop_loss: string;
+  take_profit: string;
+  action: string;
+  confidence: number;
+  [key: string]: string | number;
 }
 
 interface Signal {
@@ -79,12 +111,7 @@ interface Signal {
   take_profit: number;
   reason: string;
   timestamp: string;
-  position_management: {
-    action: string;
-    stop_loss_adjustment: string;
-    take_profit_adjustment: string;
-    risk_reward_ratio: number;
-  };
+  position_management?: PositionManagement;
 }
 
 interface TechnicalIndicators {
@@ -141,24 +168,199 @@ interface Analysis {
   confidence: number;
 }
 
+interface WebSocketMessage {
+  type: 'initial' | 'update' | 'error';
+  data?: {
+    market_data: MarketData;
+    positions: Position[];
+    signal: Signal;
+  };
+  message?: string;
+}
+
+interface DashboardProps {
+  // Add any props if needed
+}
+
+const getSignalProperty = (signal: Signal | null, property: string): string | number | null => {
+  if (!signal?.position_management) return null;
+  return signal.position_management[property] ?? null;
+};
+
+const getChangeColor = (value: number | string | null | undefined): string => {
+  if (value === null || value === undefined) return 'text.primary';
+  const numValue = typeof value === 'string' ? parseFloat(value) : value;
+  return numValue >= 0 ? 'success.main' : 'error.main';
+};
+
+const formatNumber = (value: number | string | null | undefined): number | null => {
+  if (value === null || value === undefined) return null;
+  return typeof value === 'string' ? parseFloat(value) : value;
+};
+
+const formatPrice = (value: number | string | null | undefined): string => {
+  const numValue = formatNumber(value);
+  if (numValue === null) return 'N/A';
+  return numValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+const formatPercentage = (value: number | string | null | undefined): string => {
+  const numValue = formatNumber(value);
+  if (numValue === null) return 'N/A';
+  return `${numValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+};
+
+const formatSignalValue = (value: string | number | null): string => {
+  if (value === null) return 'N/A';
+  const numValue = formatNumber(value);
+  if (numValue !== null) {
+    return numValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  return String(value);
+};
+
 const Dashboard: React.FC = () => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
-  const wsUrl = process.env.NODE_ENV === 'production'
-    ? (process.env.REACT_APP_WS_URL || `ws://${window.location.hostname}:8000/ws/dashboard`)
-    : `ws://${window.location.hostname}:8000/ws/dashboard`;
-  const { data, error, loading, isConnected, reconnect } = useWebSocket<DashboardData>(wsUrl);
-  const [lastUpdate, setLastUpdate] = useState<string>('');
+  const [currentSymbol, setCurrentSymbol] = useState<string>('BTC/USDT');
+  const [marketData, setMarketData] = useState<MarketData | null>(null);
+  const [positions, setPositions] = useState<Position[]>([]);
+  const [signal, setSignal] = useState<Signal | null>(null);
+  const [isSymbolActive, setIsSymbolActive] = useState<boolean>(false);
+  const [symbolStatus, setSymbolStatus] = useState<string>('');
+  const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
   const [analysisHistory, setAnalysisHistory] = useState<Array<Analysis>>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [wsError, setWsError] = useState<Error | null>(null);
+  const [lastDataReceived, setLastDataReceived] = useState<number>(Date.now());
+  const [connectionStatus, setConnectionStatus] = useState<string>('Connecting...');
+  const [reconnectAttempts, setReconnectAttempts] = useState<number>(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleWebSocketMessage = useCallback((data: any) => {
+    if (!data) return;
+
+    const hasMarketData = data.data?.market_data;
+    const hasPositions = data.data?.positions;
+    const hasSignal = data.data?.signal;
+
+    console.log('Processing WebSocket message:', {
+      type: data.type,
+      hasMarketData,
+      hasPositions,
+      hasSignal
+    });
+
+    if (data.type === 'error') {
+      setError(data.message);
+      setIsLoading(false);
+      return;
+    }
+
+    if (hasMarketData) {
+      console.log('Updating market data:', data.data.market_data);
+      setMarketData(data.data.market_data);
+    }
+
+    if (hasPositions) {
+      console.log(`Updating positions: ${data.data.positions.length} positions:`, data.data.positions);
+      setPositions(data.data.positions);
+    }
+
+    if (hasSignal) {
+      console.log('Updating signal:', data.data.signal);
+      setSignal(data.data.signal);
+    }
+
+    if (data.type === 'initial' || data.type === 'update') {
+      setLastUpdate(new Date());
+      setError(null);
+      setIsLoading(false);
+    }
+  }, []);
+
+  const handleWebSocketClose = useCallback((event: CloseEvent) => {
+    console.log('WebSocket closed for', currentSymbol);
+    console.log('WebSocket close event - Code:', event.code, 'Clean:', event.wasClean, 'Reason:', event.reason);
+    
+    setConnectionStatus('Disconnected');
+    
+    if (event.code === 1000) {
+      // Normal closure
+      setConnectionStatus('Connection closed');
+    } else {
+      console.log('Reconnecting after close event. Code:', event.code, 'Clean:', event.wasClean);
+      setConnectionStatus('Reconnecting...');
+    }
+  }, [currentSymbol]);
+
+  const handleWebSocketError = useCallback((error: Event) => {
+    console.error('WebSocket error:', error);
+    setError('Connection error occurred');
+    setConnectionStatus('Error');
+    setIsLoading(false);
+  }, []);
+
+  const handleWebSocketOpen = useCallback(() => {
+    console.log('WebSocket connected');
+    setConnectionStatus('Connected');
+    setError(null);
+    setReconnectAttempts(0);
+  }, []);
+
+  const { isConnected } = useWebSocket(
+    `ws://localhost:8000/ws/dashboard?symbol=${currentSymbol}`,
+    {
+      onMessage: handleWebSocketMessage,
+      onClose: handleWebSocketClose,
+      onError: handleWebSocketError,
+      onOpen: handleWebSocketOpen,
+      shouldReconnect: true,
+      reconnectAttempts: 5,
+      reconnectInterval: 10000
+    }
+  );
+
+  // Update connection status based on isConnected
+  useEffect(() => {
+    if (isConnected) {
+      setConnectionStatus('Connected');
+    } else {
+      setConnectionStatus('Disconnected');
+      setIsLoading(true);
+    }
+  }, [isConnected]);
+
+  // Reset states when symbol changes
+  useEffect(() => {
+    setMarketData(null);
+    setPositions([]);
+    setSignal(null);
+    setError(null);
+    setConnectionStatus('Connecting...');
+    setReconnectAttempts(0);
+    setIsLoading(true);
+  }, [currentSymbol]);
+
+  const getChangeColor = (value: number | undefined) => {
+    if (!value) return 'text.primary';
+    return value >= 0 ? 'success.main' : 'error.main';
+  };
+
+  // Handle symbol change
+  const handleSymbolChange = (event: React.SyntheticEvent, newValue: number) => {
+    setCurrentSymbol(newValue === 0 ? 'ETH/USDT' : 'BTC/USDT');
+    setIsLoading(true);
+  };
 
   useEffect(() => {
-    if (data?.data?.signal) {
+    if (signal) {
       setAnalysisHistory(prevHistory => {
         const newAnalysis = {
-          timestamp: data.data.signal.timestamp,
-          symbol: data.data.signal.symbol,
-          analysis: data.data.signal.reason,
-          confidence: data.data.signal.confidence
+          timestamp: signal.timestamp,
+          symbol: signal.symbol,
+          analysis: signal.reason,
+          confidence: signal.confidence
         };
         
         // Check if this analysis is already in history to prevent duplicates
@@ -173,29 +375,28 @@ const Dashboard: React.FC = () => {
         }
         return prevHistory;
       });
-      setLastUpdate(new Date().toLocaleTimeString());
+      setLastUpdate(new Date());
     }
-  }, [data?.data?.signal]);
+  }, [signal]);
+
+  const handleLoadingChange = (loading: boolean) => {
+    setIsLoading(loading);
+  };
 
   // Add debug logging
   useEffect(() => {
-    if (data) {
-      console.log('Received WebSocket data:', data);
+    if (marketData) {
+      console.log('Received market data:', marketData);
     }
-    if (error) {
-      console.error('WebSocket error:', error);
+    if (signal) {
+      console.log('Received signal:', signal);
     }
-  }, [data, error]);
+  }, [marketData, signal]);
 
   const getConfidenceColor = (confidence: number) => {
     if (confidence >= 80) return 'success';
     if (confidence >= 50) return 'warning';
     return 'error';
-  };
-
-  const formatPrice = (price: number | null | undefined) => {
-    if (price === null || price === undefined) return 'N/A';
-    return `$${price.toLocaleString()}`;
   };
 
   const getSignalColor = (signal: string | undefined) => {
@@ -352,91 +553,74 @@ const Dashboard: React.FC = () => {
   };
 
   const renderMobileMarketOverview = () => {
-    if (!data?.data?.market_data) return null;
+    if (!marketData) return null;
+    
+    // Extract and provide default values for nested properties
+    const currentPrice = marketData?.current_price ?? 0;
+    const priceChange = marketData?.price_change_24h ?? 0;
+    const volume24h = marketData?.volume_24h ?? 0;
+    const rsi = marketData?.technical_indicators?.RSI ?? 0;
+    const ema8 = marketData?.technical_indicators?.EMA?.EMA8 ?? 0;
     
     return (
-      <Card sx={{ mb: 2, bgcolor: 'background.paper' }}>
-        <CardContent sx={{ p: 2 }}>
-          <Box display="flex" alignItems="center" mb={2}>
-            <TimelineIcon sx={{ mr: 1, fontSize: '1.2rem' }} />
-            <Typography variant="h6" sx={{ fontSize: '1.1rem' }}>
-              Market Overview
+      <Box sx={{ p: 2 }}>
+        <Typography variant="h5" sx={{ fontWeight: 'bold' }}>
+          ${currentPrice.toLocaleString()}
+        </Typography>
+        <Box display="flex" alignItems="center" mt={0.5}>
+          {priceChange >= 0 ? (
+            <TrendingUpIcon color="success" sx={{ fontSize: '1.2rem' }} />
+          ) : (
+            <TrendingDownIcon color="error" sx={{ fontSize: '1.2rem' }} />
+          )}
+          <Typography 
+            variant="body2" 
+            color={priceChange >= 0 ? 'success.main' : 'error.main'}
+            sx={{ ml: 0.5 }}
+          >
+            {priceChange.toFixed(2)}%
+          </Typography>
+        </Box>
+        <Box sx={{ display: 'flex', gap: 2, mt: 2 }}>
+          <Box>
+            <Typography variant="caption" color="text.secondary" noWrap>24h Volume</Typography>
+            <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
+              ${volume24h.toLocaleString()}
             </Typography>
           </Box>
-
-          {/* Price and Change */}
-          <Box sx={{ mb: 2 }}>
-            <Typography sx={{ 
-              fontSize: '1.5rem',
-              fontWeight: 'bold',
-              wordBreak: 'break-word'
-            }}>
-              ${data.data.market_data.current_price.toLocaleString()}
+          <Box>
+            <Typography variant="caption" color="text.secondary" noWrap>RSI</Typography>
+            <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
+              {rsi.toFixed(2)}
             </Typography>
-            <Box display="flex" alignItems="center" mt={0.5}>
-              {data.data.market_data.price_change_24h >= 0 ? (
-                <TrendingUpIcon color="success" sx={{ fontSize: '1.2rem' }} />
-              ) : (
-                <TrendingDownIcon color="error" sx={{ fontSize: '1.2rem' }} />
-              )}
-              <Typography 
-                variant="body2" 
-                color={data.data.market_data.price_change_24h >= 0 ? 'success.main' : 'error.main'}
-                sx={{ ml: 0.5 }}
-              >
-                {data.data.market_data.price_change_24h.toFixed(2)}%
-              </Typography>
-            </Box>
           </Box>
-
-          {/* Volume Grid */}
-          <Grid container spacing={1} sx={{ mb: 1 }}>
-            <Grid item xs={6}>
-              <Box sx={{ p: 1, bgcolor: theme.palette.background.default, borderRadius: 1 }}>
-                <Typography variant="caption" color="text.secondary" noWrap>24h Volume</Typography>
-                <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
-                  ${data.data.market_data.volume_24h.toLocaleString()}
-                </Typography>
-              </Box>
-            </Grid>
-            <Grid item xs={6}>
-              <Box sx={{ p: 1, bgcolor: theme.palette.background.default, borderRadius: 1 }}>
-                <Typography variant="caption" color="text.secondary" noWrap>4h Volume</Typography>
-                <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
-                  ${data.data.market_data.volume_4h.toLocaleString()}
-                </Typography>
-              </Box>
-            </Grid>
-          </Grid>
-
-          {/* Indicators Grid */}
-          <Grid container spacing={1}>
-            <Grid item xs={6}>
-              <Box sx={{ p: 1, bgcolor: theme.palette.background.default, borderRadius: 1 }}>
-                <Typography variant="caption" color="text.secondary" noWrap>RSI</Typography>
-                <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
-                  {formatIndicator(data.data.market_data.rsi)}
-                </Typography>
-              </Box>
-            </Grid>
-            <Grid item xs={6}>
-              <Box sx={{ p: 1, bgcolor: theme.palette.background.default, borderRadius: 1 }}>
-                <Typography variant="caption" color="text.secondary" noWrap>EMA 8</Typography>
-                <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
-                  {formatIndicator(data.data.market_data.ema)}
-                </Typography>
-              </Box>
-            </Grid>
-          </Grid>
-          <Grid container spacing={1} sx={{paddingTop: 3}}>
-            <TradingViewWidget />
-          </Grid>
-        </CardContent>
-      </Card>
+          <Box>
+            <Typography variant="caption" color="text.secondary" noWrap>EMA 8</Typography>
+            <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
+              ${ema8.toLocaleString()}
+            </Typography>
+          </Box>
+        </Box>
+      </Box>
     );
   };
 
   const renderMobileSignalAnalysis = () => {
+    if (!signal) return null;
+
+    // Extract and provide default values for nested properties
+    const signalType = signal?.signal ?? 'N/A';
+    const confidence = signal?.confidence ?? 0;
+    const symbol = signal?.symbol ?? 'N/A';
+    const timeframe = signal?.timeframe ?? 'N/A';
+    const entryPrice = signal?.entry_price ?? 0;
+    const stopLoss = signal?.stop_loss ?? 0;
+    const takeProfit = signal?.take_profit ?? 0;
+    const positionAction = signal?.position_management?.action ?? 'N/A';
+    const riskReward = signal?.position_management?.risk_reward_ratio ?? 0;
+    const stopLossAdjustment = signal?.position_management?.stop_loss_adjustment ?? 'N/A';
+    const takeProfitAdjustment = signal?.position_management?.take_profit_adjustment ?? 'N/A';
+
     return (
       <Card sx={{ mb: 2, bgcolor: 'background.paper' }}>
         <CardContent sx={{ p: 2 }}>
@@ -447,10 +631,9 @@ const Dashboard: React.FC = () => {
                 Signal & Analysis
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                      Last updated: {lastUpdate}
-                </Typography>
+                Last updated: {lastUpdate.toLocaleTimeString()}
+              </Typography>
             </Box>
-            
           </Box>
 
           {/* Signal Details */}
@@ -463,15 +646,15 @@ const Dashboard: React.FC = () => {
               flexWrap: 'wrap'
             }}>
               <Chip
-                label={data?.data?.signal?.signal || 'HOLD'}
-                color={getSignalColor(data?.data?.signal?.signal)}
+                label={signalType}
+                color={getSignalColor(signalType)}
                 size="small"
               />
               <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-                {data?.data?.signal?.symbol || 'ETH/USDT'} • {data?.data?.signal?.timeframe || '5m'}
+                {symbol} • {timeframe}
               </Typography>
               <Chip
-                label={`${Math.round((data?.data?.signal?.confidence || 0) * 100)}% Confidence`}
+                label={`${Math.round(confidence * 100)}% Confidence`}
                 color="success"
                 size="small"
               />
@@ -482,19 +665,19 @@ const Dashboard: React.FC = () => {
               <Grid item xs={4}>
                 <Typography variant="caption" color="text.secondary">Entry</Typography>
                 <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
-                  {data?.data?.signal?.entry_price ? `$${data.data.signal.entry_price.toLocaleString()}` : 'None'}
+                  ${entryPrice.toLocaleString()}
                 </Typography>
               </Grid>
               <Grid item xs={4}>
                 <Typography variant="caption" color="text.secondary">Stop Loss</Typography>
                 <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
-                  {data?.data?.signal?.stop_loss ? `$${data.data.signal.stop_loss.toLocaleString()}` : 'None'}
+                  ${stopLoss.toLocaleString()}
                 </Typography>
               </Grid>
               <Grid item xs={4}>
                 <Typography variant="caption" color="text.secondary">Take Profit</Typography>
                 <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
-                  {data?.data?.signal?.take_profit ? `$${data.data.signal.take_profit.toLocaleString()}` : 'None'}
+                  ${takeProfit.toLocaleString()}
                 </Typography>
               </Grid>
             </Grid>
@@ -505,66 +688,42 @@ const Dashboard: React.FC = () => {
                 Position Management
               </Typography>
               <Chip
-                label={data?.data?.signal?.position_management?.action || 'MAINTAIN'}
-                color={getActionColor(data?.data?.signal?.position_management?.action)}
+                label={positionAction}
+                color={getActionColor(positionAction)}
                 size="small"
                 sx={{ fontSize: '0.7rem', mr: 1 }}
               />
               <Typography variant="caption" sx={{ ml: 1 }}>
-                R/R: {data?.data?.signal?.position_management?.risk_reward_ratio?.toFixed(2) || '0.00'}
+                R/R: {riskReward.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </Typography>
             </Box>
             
             <Grid item xs={6} sm={3}>
-                <Typography variant="caption" color="text.secondary"> Trailing Stop Loss</Typography>
-                <Typography variant="body2" sx={{ 
-                  fontSize: { xs: '0.75rem', sm: '0.875rem' },
-                  wordBreak: 'break-word'
-                }}>
-                  {data?.data?.signal?.position_management?.stop_loss_adjustment || 'None'}
-                </Typography>
-              </Grid>
-              <Grid item xs={6} sm={3}>
-                <Typography variant="caption" color="text.secondary"> Trailing Take Profit</Typography>
-                <Typography variant="body2" sx={{ 
-                  fontSize: { xs: '0.75rem', sm: '0.875rem' },
-                  wordBreak: 'break-word'
-                }}>
-                  {data?.data?.signal?.position_management?.take_profit_adjustment || 'None'}
-                </Typography>
-              </Grid>
-              <Grid item xs={6} sm={3}>
-                <Typography variant="caption" color="text.secondary">Trade Started on</Typography>
-                <Typography variant="body2" sx={{ 
-                  fontSize: { xs: '0.75rem', sm: '0.875rem' },
-                  wordBreak: 'break-word'
-                }}>
-                  {data?.data?.positions?.[0]?.created_at ? 
-                    (() => {
-                      const istTime = convertUTCToIST(data.data.positions[0].created_at);
-                      return `${istTime.formatted} (${formatDuration(istTime.timestamp)}m)`;
-                    })()
-                    : 'None'}
-                </Typography>
-              </Grid>
-              
+              <Typography variant="caption" color="text.secondary"> Trailing Stop Loss</Typography>
+              <Typography variant="body2" sx={{ 
+                fontSize: { xs: '0.75rem', sm: '0.875rem' },
+                wordBreak: 'break-word'
+              }}>
+                {stopLossAdjustment}
+              </Typography>
+            </Grid>
+            <Grid item xs={6} sm={3}>
+              <Typography variant="caption" color="text.secondary"> Trailing Take Profit</Typography>
+              <Typography variant="body2" sx={{ 
+                fontSize: { xs: '0.75rem', sm: '0.875rem' },
+                wordBreak: 'break-word'
+              }}>
+                {takeProfitAdjustment}
+              </Typography>
+            </Grid>
           </Box>
-
-          <Divider sx={{ my: 2 }} />
-
-          {/* Analysis History */}
-          {analysisHistory.length > 0 ? (
-            renderAnalysisHistory()
-          ) : (
-            <Alert severity="info" sx={{ fontSize: '0.8rem' }}>No analysis history available</Alert>
-          )}
         </CardContent>
       </Card>
     );
   };
 
   const renderMobilePositions = () => {
-    if (!data?.data?.positions || data.data.positions.length === 0) {
+    if (positions.length === 0) {
       return (
         <Alert severity="info" sx={{ fontSize: '0.8rem' }}>No active positions</Alert>
       );
@@ -572,7 +731,7 @@ const Dashboard: React.FC = () => {
 
     return (
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-        {data.data.positions.map((position) => (
+        {positions.map((position) => (
           <Card key={position.id} sx={{ bgcolor: theme.palette.background.default }}>
             <CardContent sx={{ p: 2 }}>
               {/* Header - Symbol and Type */}
@@ -669,9 +828,139 @@ const Dashboard: React.FC = () => {
     );
   };
 
-  if (loading) {
+  const renderMarketOverview = (): JSX.Element => {
+    const currentPrice = marketData?.current_price;
+    const priceChange24h = marketData?.price_change_24h;
+
     return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight="100vh">
+      <Box sx={{ transition: 'opacity 0.3s ease-in-out' }}>
+        <CardHeader
+          title={
+            <Box display="flex" alignItems="center">
+              <ShowChartIcon sx={{ mr: 1 }} />
+              <Typography variant="h6">Market Overview</Typography>
+            </Box>
+          }
+        />
+        <Box p={2}>
+          <Grid container spacing={2}>
+            <Grid item xs={12} sm={6}>
+              <Paper sx={{ p: 2 }}>
+                <Typography variant="subtitle2" color="text.secondary">Current Price</Typography>
+                <Typography variant="h6">${formatPrice(currentPrice)}</Typography>
+              </Paper>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <Paper sx={{ p: 2 }}>
+                <Typography variant="subtitle2" color="text.secondary">24h Change</Typography>
+                <Typography variant="h6" color={getChangeColor(priceChange24h)}>
+                  {formatPercentage(priceChange24h)}
+                </Typography>
+              </Paper>
+            </Grid>
+          </Grid>
+        </Box>
+      </Box>
+    );
+  };
+
+  const renderSignalAnalysis = (): JSX.Element => {
+    return (
+      <Box sx={{ transition: 'opacity 0.3s ease-in-out' }}>
+        {signal && (
+          <>
+            <CardHeader
+              title={
+                <Box display="flex" alignItems="center">
+                  <SignalCellularAltIcon sx={{ mr: 1 }} />
+                  <Typography variant="h6">Signal Analysis</Typography>
+                </Box>
+              }
+            />
+            <Box p={2}>
+              <Grid container spacing={2}>
+                <Grid item xs={12}>
+                  <Paper sx={{ p: 2 }}>
+                    <Typography variant="subtitle2" color="text.secondary">Position</Typography>
+                    <Typography variant="h6">{formatSignalValue(getSignalProperty(signal, 'position_type'))}</Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} sm={6}>
+                  <Paper sx={{ p: 2 }}>
+                    <Typography variant="subtitle2" color="text.secondary">Entry Price</Typography>
+                    <Typography variant="h6">${formatSignalValue(getSignalProperty(signal, 'entry_price'))}</Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} sm={6}>
+                  <Paper sx={{ p: 2 }}>
+                    <Typography variant="subtitle2" color="text.secondary">Stop Loss</Typography>
+                    <Typography variant="h6">${formatSignalValue(getSignalProperty(signal, 'stop_loss'))}</Typography>
+                  </Paper>
+                </Grid>
+                {getSignalProperty(signal, 'confidence') !== null && (
+                  <Grid item xs={12}>
+                    <Paper sx={{ p: 2 }}>
+                      <Typography variant="subtitle2" color="text.secondary">Confidence</Typography>
+                      <Typography variant="h6">
+                        {formatPercentage(getSignalProperty(signal, 'confidence') as number)}
+                      </Typography>
+                    </Paper>
+                  </Grid>
+                )}
+              </Grid>
+            </Box>
+          </>
+        )}
+      </Box>
+    );
+  };
+
+  const renderPositions = (): JSX.Element => {
+    return (
+      <Box sx={{ transition: 'opacity 0.3s ease-in-out' }}>
+        {positions.length > 0 ? (
+          <Box sx={{ overflowX: 'auto' }}>
+            <TableContainer>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Type</TableCell>
+                    <TableCell>Entry Price</TableCell>
+                    <TableCell>Current Price</TableCell>
+                    <TableCell>Stop Loss</TableCell>
+                    <TableCell>Take Profit</TableCell>
+                    <TableCell>PnL</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {positions.map((position) => (
+                    <TableRow key={position.id}>
+                      <TableCell>{position.position_type}</TableCell>
+                      <TableCell>${formatPrice(position.entry_price)}</TableCell>
+                      <TableCell>${formatPrice(position.current_price)}</TableCell>
+                      <TableCell>${formatPrice(position.stop_loss)}</TableCell>
+                      <TableCell>${formatPrice(position.take_profit)}</TableCell>
+                      <TableCell>
+                        <Typography color={Number(position.pnl) >= 0 ? 'success.main' : 'error.main'}>
+                          ${formatPrice(position.pnl)}
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Box>
+        ) : (
+          <Alert severity="info">No active positions</Alert>
+        )}
+      </Box>
+    );
+  };
+
+  if (isLoading) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
         <CircularProgress />
       </Box>
     );
@@ -679,488 +968,111 @@ const Dashboard: React.FC = () => {
 
   return (
     <Box sx={{ p: { xs: 1, sm: 2, md: 3 } }}>
-      {/* Connection Status */}
-      {!isConnected && (
-        <Alert 
-          severity={error ? "error" : "warning"}
-          action={
-            <Button color="inherit" size="small" onClick={reconnect}>
-              Retry
-            </Button>
-          }
-          sx={{ mb: 2, fontSize: isMobile ? '0.8rem' : 'inherit' }}
-        >
-          {error ? error.message : "Connecting..."}
-        </Alert>
-      )}
+      {/* Static Symbol Tabs */}
+      <Tabs
+        value={currentSymbol === 'ETH/USDT' ? 0 : 1}
+        onChange={handleSymbolChange}
+        variant="fullWidth"
+        sx={{ mb: 3 }}
+      >
+        <Tab label="ETH/USDT" />
+        <Tab label="BTC/USDT" />
+      </Tabs>
 
-      {/* Dashboard Content */}
-      {isMobile ? (
-        // Mobile Layout
-        <>
-          {renderMobileMarketOverview()}
-          {renderMobileSignalAnalysis()}
-          
-          {/* Active Positions */}
-          <Card sx={{ bgcolor: 'background.paper' }}>
-            <CardContent sx={{ p: 2 }}>
-              <Typography variant="h6" gutterBottom sx={{ fontSize: '1.1rem' }}>
-                Active Positions
-              </Typography>
-              {renderMobilePositions()}
-            </CardContent>
-          </Card>
-        </>
-      ) : (
-        // Desktop Layout - Keep existing grid layout
-        <Grid container spacing={{ xs: 2, md: 3 }}>
-          {/* Market Overview */}
-          <Grid item xs={12} lg={6}>
-            <Card sx={{ height: '100%', bgcolor: 'background.paper', boxShadow: 3 }}>
-              <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
-                <Box display="flex" alignItems="center" mb={2}>
-                  <TimelineIcon sx={{ mr: 1 }} />
-                  <Typography variant="h6" sx={{ fontSize: { xs: '1.1rem', sm: '1.25rem' } }}>
-                    Market Overview
-                  </Typography>
-                </Box>
-                {data?.data?.market_data && (
-                  <Grid container spacing={{ xs: 1, sm: 2 }}>
-                    <Grid item xs={12}>
-                      <Box sx={{ mb: 2 }}>
-                        <Typography variant="h4" sx={{ 
-                          fontWeight: 'bold',
-                          fontSize: { xs: '1.5rem', sm: '2rem', md: '2.5rem' },
-                          wordBreak: 'break-word'
-                        }}>
-                          ${data.data.market_data.current_price.toLocaleString()}
-                        </Typography>
-                        <Box display="flex" alignItems="center" mt={1}>
-                          {data.data.market_data.price_change_24h >= 0 ? (
-                            <TrendingUpIcon color="success" sx={{ fontSize: { xs: '1.2rem', sm: '1.5rem' } }} />
-                          ) : (
-                            <TrendingDownIcon color="error" sx={{ fontSize: { xs: '1.2rem', sm: '1.5rem' } }} />
-                          )}
-                          <Typography 
-                            variant="body1" 
-                            color={data.data.market_data.price_change_24h >= 0 ? 'success.main' : 'error.main'}
-                            sx={{ ml: 1, fontSize: { xs: '0.9rem', sm: '1rem' } }}
-                          >
-                            {data.data.market_data.price_change_24h.toFixed(2)}%
-                          </Typography>
-                        </Box>
-                      </Box>
-                    </Grid>
-
-                    {/* Volume Indicators */}
-                    <Grid item xs={6} sm={3}>
-                      <Box sx={{ 
-                        p: { xs: 1, sm: 2 }, 
-                        bgcolor: theme.palette.background.default,
-                        borderRadius: 1,
-                        minHeight: { xs: '80px', sm: '100px' }
-                      }}>
-                        <Typography variant="subtitle2" color="text.secondary" gutterBottom noWrap>
-                          24h Volume
-                        </Typography>
-                        <Typography variant="body2" sx={{ 
-                          fontSize: { xs: '0.75rem', sm: '0.875rem' },
-                          wordBreak: 'break-word'
-                        }}>
-                          ${data.data.market_data.volume_24h.toLocaleString()}
-                        </Typography>
-                      </Box>
-                    </Grid>
-                    <Grid item xs={6} sm={3}>
-                      <Box sx={{ 
-                        p: { xs: 1, sm: 2 }, 
-                        bgcolor: theme.palette.background.default,
-                        borderRadius: 1,
-                        minHeight: { xs: '80px', sm: '100px' }
-                      }}>
-                        <Typography variant="subtitle2" color="text.secondary" gutterBottom noWrap>
-                          4h Volume
-                        </Typography>
-                        <Typography variant="body2" sx={{ 
-                          fontSize: { xs: '0.75rem', sm: '0.875rem' },
-                          wordBreak: 'break-word'
-                        }}>
-                          ${data.data.market_data.volume_4h.toLocaleString()}
-                        </Typography>
-                      </Box>
-                    </Grid>
-                    <Grid item xs={6} sm={3}>
-                      <Box sx={{ 
-                        p: { xs: 1, sm: 2 }, 
-                        bgcolor: theme.palette.background.default,
-                        borderRadius: 1,
-                        minHeight: { xs: '80px', sm: '100px' }
-                      }}>
-                        <Typography variant="subtitle2" color="text.secondary" gutterBottom noWrap>
-                          1h Volume
-                        </Typography>
-                        <Typography variant="body2" sx={{ 
-                          fontSize: { xs: '0.75rem', sm: '0.875rem' },
-                          wordBreak: 'break-word'
-                        }}>
-                          ${data.data.market_data.volume_1h.toLocaleString()}
-                        </Typography>
-                      </Box>
-                    </Grid>
-                    <Grid item xs={6} sm={3}>
-                      <Box sx={{ 
-                        p: { xs: 1, sm: 2 }, 
-                        bgcolor: theme.palette.background.default,
-                        borderRadius: 1,
-                        minHeight: { xs: '80px', sm: '100px' }
-                      }}>
-                        <Typography variant="subtitle2" color="text.secondary" gutterBottom noWrap>
-                          15m Volume
-                        </Typography>
-                        <Typography variant="body2" sx={{ 
-                          fontSize: { xs: '0.75rem', sm: '0.875rem' },
-                          wordBreak: 'break-word'
-                        }}>
-                          ${data.data.market_data.volume_15m.toLocaleString()}
-                        </Typography>
-                      </Box>
-                    </Grid>
-
-                    {/* Technical Indicators */}
-                    <Grid item xs={6} sm={3}>
-                      <Box sx={{ 
-                        p: { xs: 1, sm: 2 }, 
-                        bgcolor: theme.palette.background.default,
-                        borderRadius: 1,
-                        minHeight: { xs: '80px', sm: '100px' }
-                      }}>
-                        <Typography variant="subtitle2" color="text.secondary" gutterBottom noWrap>
-                          RSI
-                        </Typography>
-                        <Typography variant="body2" sx={{ 
-                          fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                        }}>
-                          {formatIndicator(data?.data?.market_data?.rsi)}
-                        </Typography>
-                      </Box>
-                    </Grid>
-                    <Grid item xs={6} sm={3}>
-                      <Box sx={{ 
-                        p: { xs: 1, sm: 2 }, 
-                        bgcolor: theme.palette.background.default,
-                        borderRadius: 1,
-                        minHeight: { xs: '80px', sm: '100px' }
-                      }}>
-                        <Typography variant="subtitle2" color="text.secondary" gutterBottom noWrap>
-                          MACD
-                        </Typography>
-                        <Typography variant="body2" sx={{ 
-                          fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                        }}>
-                          {formatIndicator(data?.data?.market_data?.macd)}
-                        </Typography>
-                      </Box>
-                    </Grid>
-                    <Grid item xs={6} sm={3}>
-                      <Box sx={{ 
-                        p: { xs: 1, sm: 2 }, 
-                        bgcolor: theme.palette.background.default,
-                        borderRadius: 1,
-                        minHeight: { xs: '80px', sm: '100px' }
-                      }}>
-                        <Typography variant="subtitle2" color="text.secondary" gutterBottom noWrap>
-                          EMA 8
-                        </Typography>
-                        <Typography variant="body2" sx={{ 
-                          fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                        }}>
-                          {formatIndicator(data?.data?.market_data?.ema)}
-                        </Typography>
-                      </Box>
-                    </Grid>
-                    <Grid item xs={6} sm={3}>
-                      <Box sx={{ 
-                        p: { xs: 1, sm: 2 }, 
-                        bgcolor: theme.palette.background.default,
-                        borderRadius: 1,
-                        minHeight: { xs: '80px', sm: '100px' }
-                      }}>
-                        <Typography variant="subtitle2" color="text.secondary" gutterBottom noWrap>
-                          SMA 8
-                        </Typography>
-                        <Typography variant="body2" sx={{ 
-                          fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                        }}>
-                          {formatIndicator(data?.data?.market_data?.sma)}
-                        </Typography>
-                      </Box>
-                    </Grid>
-                  </Grid>
-                )}
-
-                {!isMobile && (
-                  /* TradingView Chart */
-                  <Box sx={{ height: '360px', width: '100%', mt: 3 }}>
-                    <TradingViewWidget />
-                  </Box>
-                )}
-              </CardContent>
-            </Card>
+      {/* Always show connection status */}
+      <Paper sx={{ p: 2, mb: 2 }}>
+        <Box display="flex" justifyContent="space-between" alignItems="center">
+          <Typography variant="h6">Connection Status</Typography>
+          <Box>
+            <Typography variant="body2" color="text.secondary">
+              Last Update: {lastUpdate.toLocaleTimeString()}
+            </Typography>
+          </Box>
+        </Box>
+        <Grid container spacing={2} mt={1}>
+          <Grid item xs={12} sm={4}>
+            <Typography variant="subtitle2" color="text.secondary">Status</Typography>
+            <Typography variant="body1">{connectionStatus}</Typography>
           </Grid>
-
-          {/* Signal and Analysis Section */}
-          <Grid item xs={12} lg={6}>
-            <Card sx={{ height: '100%', bgcolor: 'background.paper', boxShadow: 3 }}>
-              <CardHeader
-                title={
-                  <Box display="flex" alignItems="center">
-                    <UpdateIcon sx={{ mr: 1 }} />
-                    <Typography variant="h6" sx={{ fontSize: { xs: '1.1rem', sm: '1.25rem' } }}>
-                      Signal & Analysis
-                    </Typography>
-                  </Box>
-                }
-                action={
-                  <Typography variant="caption" color="text.secondary">
-                    Last updated: {lastUpdate}
-                  </Typography>
-                }
-                sx={{ p: { xs: 2, sm: 3 } }}
-              />
-              <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
-                {/* Signal Details */}
-                <Box sx={{ mb: 3 }}>
-                  <Box sx={{ 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    mb: 2,
-                    flexWrap: 'wrap',
-                    gap: 1
-                  }}>
-                    <Chip
-                      label={data?.data?.signal?.signal || 'HOLD'}
-                      color={getSignalColor(data?.data?.signal?.signal)}
-                      size="small"
-                    />
-                    {data?.data?.positions && data.data.positions.length > 0 && (
-                     <Chip
-                      label={data?.data?.positions[0]?.position_type || 'HOLD'}
-                      color={getSignalColor(data?.data?.positions[0]?.position_type)}
-                      size="small"
-                    />
-                    
-                    )}
-                    
-                    <Typography variant="body2" sx={{ fontSize: { xs: '0.8rem', sm: '0.875rem' } }}>
-                      {data?.data?.signal?.symbol || 'ETH/USDT'} • {data?.data?.signal?.timeframe || '5m'}
-                    </Typography>
-                    <Chip
-                      label={`${Math.round((data?.data?.signal?.confidence || 0) * 100)}% Confidence`}
-                      color="success"
-                      size="small"
-                      sx={{ ml: { xs: 0, sm: 'auto' } }}
-                    />
-                  </Box>
-
-                  {/* Signal Management Grid */}
-                  <Grid container spacing={{ xs: 1, sm: 2 }} sx={{ mb: 2 }}>
-                    <Grid item xs={6} sm={4}>
-                      <Typography variant="caption" color="text.secondary">Entry Price</Typography>
-                      <Typography variant="body2" sx={{ 
-                        fontSize: { xs: '0.75rem', sm: '0.875rem' },
-                        wordBreak: 'break-word'
-                      }}>
-                        {data?.data?.signal?.entry_price ? `$${data.data.signal.entry_price.toLocaleString()}` : 'None'}
-                      </Typography>
-                    </Grid>
-                    <Grid item xs={6} sm={4}>
-                      <Typography variant="caption" color="text.secondary">Take Profit</Typography>
-                      <Typography variant="body2" sx={{ 
-                        fontSize: { xs: '0.75rem', sm: '0.875rem' },
-                        wordBreak: 'break-word'
-                      }}>
-                        {data?.data?.signal?.take_profit ? `$${data.data.signal.take_profit.toLocaleString()}` : 'None'}
-                      </Typography>
-                    </Grid>
-                    <Grid item xs={6} sm={4}>
-                      <Typography variant="caption" color="text.secondary">Stop Loss</Typography>
-                      <Typography variant="body2" sx={{ 
-                        fontSize: { xs: '0.75rem', sm: '0.875rem' },
-                        wordBreak: 'break-word'
-                      }}>
-                        {data?.data?.signal?.stop_loss ? `$${data.data.signal.stop_loss.toLocaleString()}` : 'None'}
-                      </Typography>
-                    </Grid>
-                  </Grid>
-
-                  {/* Position Management Grid */}
-                  <Grid container spacing={{ xs: 1, sm: 2 }}>
-                    <Grid item xs={6} sm={3}>
-                      <Typography variant="caption" color="text.secondary">Action</Typography>
-                      <Typography variant="body2">
-                        <Chip
-                          label={data?.data?.signal?.position_management?.action || 'MAINTAIN'}
-                          color={getActionColor(data?.data?.signal?.position_management?.action)}
-                          size="small"
-                          sx={{ fontSize: { xs: '0.7rem', sm: '0.8rem' } }}
-                        />
-                      </Typography>
-                    </Grid>
-                    <Grid item xs={6} sm={3}>
-                      <Typography variant="caption" color="text.secondary"> Trailing Stop Loss</Typography>
-                      <Typography variant="body2" sx={{ 
-                        fontSize: { xs: '0.75rem', sm: '0.875rem' },
-                        wordBreak: 'break-word'
-                      }}>
-                        {data?.data?.signal?.position_management?.stop_loss_adjustment || 'None'}
-                      </Typography>
-                    </Grid>
-                    <Grid item xs={6} sm={3}>
-                      <Typography variant="caption" color="text.secondary"> Trailing Take Profit</Typography>
-                      <Typography variant="body2" sx={{ 
-                        fontSize: { xs: '0.75rem', sm: '0.875rem' },
-                        wordBreak: 'break-word'
-                      }}>
-                        {data?.data?.signal?.position_management?.take_profit_adjustment || 'None'}
-                      </Typography>
-                    </Grid>
-                    <Grid item xs={6} sm={3}>
-                      <Typography variant="caption" color="text.secondary">Risk/Reward</Typography>
-                      <Typography variant="body2" sx={{ 
-                        fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                      }}>
-                        {data?.data?.signal?.position_management?.risk_reward_ratio?.toFixed(2) || '0.00'}
-                      </Typography>
-                    </Grid>
-                    
-              <Grid item md={6}>
-                <Typography variant="caption" color="text.secondary">Trade Started on</Typography>
-                <Typography variant="body2" sx={{ 
-                  fontSize: { xs: '0.75rem', sm: '0.875rem' },
-                  wordBreak: 'break-word'
-                }}>
-                  {data?.data?.positions?.[0]?.created_at ? 
-                    (() => {
-                      const istTime = convertUTCToIST(data.data.positions[0].created_at);
-                      return `${istTime.formatted} (${formatDuration(istTime.timestamp)}m)`;
-                    })()
-                    : 'None'}
-                </Typography>
-              </Grid>
-                  </Grid>
-                </Box>
-
-                <Divider sx={{ my: 2 }} />
-
-                {/* Analysis History */}
-                {analysisHistory.length > 0 ? (
-                  renderAnalysisHistory()
-                ) : (
-                  <Alert severity="info">No analysis history available</Alert>
-                )}
-              </CardContent>
-            </Card>
+          <Grid item xs={12} sm={4}>
+            <Typography variant="subtitle2" color="text.secondary">Symbol Status</Typography>
+            <Typography variant="body1">{isConnected ? 'Running' : 'Connection closed'}</Typography>
           </Grid>
-
-          {/* Active Positions */}
-          <Grid item xs={12}>
-            <Card sx={{ bgcolor: 'background.paper', boxShadow: 3 }}>
-              <CardContent sx={{ p: { xs: 1, sm: 2, md: 3 } }}>
-                <Typography variant="h6" gutterBottom sx={{ fontSize: { xs: '1.1rem', sm: '1.25rem' } }}>
-                  Active Positions
-                </Typography>
-                {data?.data?.positions && data.data.positions.length > 0 ? (
-                  <Box sx={{ overflowX: 'auto' }}>
-                    <TableContainer>
-                      <Table size="small">
-                        <TableHead>
-                          <TableRow>
-                            <TableCell sx={{ whiteSpace: 'nowrap', fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>Symbol</TableCell>
-                            <TableCell sx={{ whiteSpace: 'nowrap', fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>Type</TableCell>
-                            <TableCell sx={{ whiteSpace: 'nowrap', fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>Entry</TableCell>
-                            <TableCell sx={{ whiteSpace: 'nowrap', fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>Current</TableCell>
-                            <TableCell sx={{ whiteSpace: 'nowrap', fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>Stop</TableCell>
-                            <TableCell sx={{ whiteSpace: 'nowrap', fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>Target</TableCell>
-                            <TableCell sx={{ whiteSpace: 'nowrap', fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>Size</TableCell>
-                            <TableCell sx={{ whiteSpace: 'nowrap', fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>P&L</TableCell>
-                            <TableCell sx={{ whiteSpace: 'nowrap', fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>Status</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {data.data.positions.map((position) => (
-                            <TableRow key={position.id}>
-                              <TableCell sx={{ 
-                                whiteSpace: 'nowrap', 
-                                fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                              }}>
-                                {position.symbol}
-                              </TableCell>
-                              <TableCell>
-                                <Chip
-                                  label={position.position_type}
-                                  color={position.position_type === 'LONG' ? 'success' : 'error'}
-                                  size="small"
-                                  sx={{ fontSize: { xs: '0.7rem', sm: '0.8rem' } }}
-                                />
-                              </TableCell>
-                              <TableCell sx={{ 
-                                whiteSpace: 'nowrap', 
-                                fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                              }}>
-                                {formatPrice(position.entry_price)}
-                              </TableCell>
-                              <TableCell sx={{ 
-                                whiteSpace: 'nowrap', 
-                                fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                              }}>
-                                {formatPrice(position.current_price)}
-                              </TableCell>
-                              <TableCell sx={{ 
-                                whiteSpace: 'nowrap', 
-                                fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                              }}>
-                                {formatPrice(position.stop_loss)}
-                              </TableCell>
-                              <TableCell sx={{ 
-                                whiteSpace: 'nowrap', 
-                                fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                              }}>
-                                {formatPrice(position.take_profit)}
-                              </TableCell>
-                              <TableCell sx={{ 
-                                whiteSpace: 'nowrap', 
-                                fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                              }}>
-                                {position.size}
-                              </TableCell>
-                              <TableCell sx={{ 
-                                whiteSpace: 'nowrap', 
-                                fontSize: { xs: '0.75rem', sm: '0.875rem' },
-                                color: position.pnl >= 0 ? theme.palette.success.main : theme.palette.error.main
-                              }}>
-                                ${Math.abs(position.pnl).toLocaleString()}
-                              </TableCell>
-                              <TableCell>
-                                <Chip
-                                  label={position.status}
-                                  color={position.status === 'ACTIVE' ? 'success' : 'default'}
-                                  size="small"
-                                  sx={{ fontSize: { xs: '0.7rem', sm: '0.8rem' } }}
-                                />
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
-                  </Box>
-                ) : (
-                  <Alert severity="info">No active positions</Alert>
-                )}
-              </CardContent>
-            </Card>
+          <Grid item xs={12} sm={4}>
+            <Typography variant="subtitle2" color="text.secondary">Reconnect Attempts</Typography>
+            <Typography variant="body1">{reconnectAttempts} / 5</Typography>
           </Grid>
         </Grid>
+        {error && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {error}
+          </Alert>
+        )}
+      </Paper>
+
+      {isLoading ? (
+        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '50vh' }}>
+          <CircularProgress />
+          <Typography variant="body1" sx={{ ml: 2 }}>
+            Loading dashboard data...
+          </Typography>
+        </Box>
+      ) : (
+        <>
+          {!isConnected && !wsError && (
+            <Box sx={{ mb: 2 }}>
+              <Alert severity="warning">
+                {symbolStatus || 'Connecting to dashboard data stream...'}
+              </Alert>
+            </Box>
+          )}
+
+          {isConnected && !isSymbolActive && (
+            <Box sx={{ mb: 2 }}>
+              <Alert severity="info">
+                {symbolStatus}
+              </Alert>
+            </Box>
+          )}
+
+          {isConnected && (
+            <Grid container spacing={3}>
+              {/* Market Overview */}
+              <Grid item xs={12} md={8}>
+                <Card sx={{ bgcolor: 'background.paper' }}>
+                  <CardContent>
+                    {marketData ? renderMarketOverview() : (
+                      <Alert severity="info">Waiting for market data...</Alert>
+                    )}
+                  </CardContent>
+                </Card>
+              </Grid>
+
+              {/* Signal Analysis */}
+              <Grid item xs={12} md={4}>
+                <Card sx={{ bgcolor: 'background.paper' }}>
+                  <CardContent>
+                    {signal ? renderSignalAnalysis() : (
+                      <Alert severity="info">Waiting for signal data...</Alert>
+                    )}
+                  </CardContent>
+                </Card>
+              </Grid>
+
+              {/* Active Positions */}
+              <Grid item xs={12}>
+                <Card sx={{ bgcolor: 'background.paper' }}>
+                  <CardContent>
+                    <Typography variant="h6" gutterBottom>
+                      Active Positions
+                    </Typography>
+                    {renderPositions()}
+                  </CardContent>
+                </Card>
+              </Grid>
+            </Grid>
+          )}
+        </>
       )}
     </Box>
   );
