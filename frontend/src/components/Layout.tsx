@@ -1,4 +1,3 @@
-
 import { Outlet } from 'react-router-dom';
 import Navbar from './Navbar';
 import useWebSocketData from '@/hooks/useWebSocketData';
@@ -6,7 +5,7 @@ import { BadgeCheck, WifiOff } from 'lucide-react';
 import ThemeToggle from './ThemeToggle';
 
 // WebSocket URL configuration
-const WS_URL = "ws://localhost:8000/ws/dashboard";
+const WS_URL = import.meta.env.VITE_WS_URL + "/ws/dashboard";
 
 const Layout = () => {
   const { isConnected } = useWebSocketData(WS_URL);

@@ -8,7 +8,7 @@ import useWebSocketData, { Signal } from "@/hooks/useWebSocketData";
 
 const Dashboard = () => {
   const [activeTab, setActiveTab] = useState("eth_usdt");
-  const [wsUrl, setWsUrl] = useState("ws://localhost:8000/ws/dashboard?symbol=ETH/USDT");
+  const [wsUrl, setWsUrl] = useState(`${import.meta.env.VITE_WS_URL}/ws/dashboard?symbol=ETH/USDT`);
   const { data, isConnected, error, signalHistory } = useWebSocketData(wsUrl);
   const { toast } = useToast();
   
@@ -25,7 +25,7 @@ const Dashboard = () => {
   useEffect(() => {
     // Update WebSocket URL when tab changes
     const symbol = activeTab === "eth_usdt" ? "ETH/USDT" : "BTC/USDT";
-    const newWsUrl = `ws://localhost:8000/ws/dashboard?symbol=${encodeURIComponent(symbol)}`;
+    const newWsUrl = `${import.meta.env.VITE_WS_URL}/ws/dashboard?symbol=${encodeURIComponent(symbol)}`;
     setWsUrl(newWsUrl);
   }, [activeTab]);
 

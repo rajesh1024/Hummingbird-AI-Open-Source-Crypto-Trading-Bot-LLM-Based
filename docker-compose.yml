@@ -35,6 +35,7 @@ services:
       - POSTGRES_PASSWORD=hummingbird
       - POSTGRES_DB=hummingbird
       - POSTGRES_HOST=postgres
+      - WS_URL=ws://192.168.29.184:8000
     volumes:
       - .:/app
     restart: unless-stopped
@@ -53,6 +54,7 @@ services:
       - "8080:8080"
     environment:
       - NODE_ENV=development
+      - VITE_WS_URL=ws://13.51.146.171:8000
     volumes:
       - ./frontend:/app
       - /app/node_modules

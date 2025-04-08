@@ -47,7 +47,18 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
 )
+
+# Add WebSocket-specific middleware
+@app.middleware("http")
+async def add_websocket_headers(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/ws/"):
+        response.headers["Upgrade"] = "websocket"
+        response.headers["Connection"] = "Upgrade"
+    return response
 
 # Initialize Hummingbird instance
 hummingbird = None
@@ -408,13 +419,19 @@ async def get_position_history(
     try:
         logger.info(f"Fetching position history with params: page={page}, limit={limit}, start_date={start_date}, end_date={end_date}, symbol={symbol}, type={type}")
         
-        # Get all positions with filters
-        positions = db_manager.get_closed_positions(
-            start_date=start_date,
-            end_date=end_date,
-            symbol=symbol,
-            type=type
-        )
+        try:
+            # Get all positions with filters
+            positions = db_manager.get_closed_positions(
+                start_date=start_date,
+                end_date=end_date,
+                symbol=symbol,
+                type=type
+            )
+            logger.info(f"Successfully retrieved {len(positions)} positions from database")
+        except Exception as db_error:
+            logger.error(f"Database error in get_closed_positions: {str(db_error)}")
+            logger.error(f"Database error traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Database error: {str(db_error)}")
         
         logger.info(f"Found {len(positions)} positions")
         
@@ -422,54 +439,69 @@ async def get_position_history(
         if positions:
             logger.info(f"Sample position data: {json.dumps(positions[0], default=str)}")
         
-        # Calculate statistics from all positions
-        total_positions = len(positions)
-        logger.info(f"Total positions: {total_positions}")
+        try:
+            # Calculate statistics from all positions
+            total_positions = len(positions)
+            logger.info(f"Total positions: {total_positions}")
+            
+            # Calculate total PnL and winning trades
+            total_pnl = 0
+            winning_trades = 0
+            for pos in positions:
+                try:
+                    pnl = float(pos.get('pnl', 0))
+                    total_pnl += pnl
+                    if pnl >= 0:
+                        winning_trades += 1
+                    logger.debug(f"Position PnL: {pnl}, Running total: {total_pnl}, Winning trades: {winning_trades}")
+                except (TypeError, ValueError) as e:
+                    logger.error(f"Error processing PnL for position: {pos.get('pnl')}, Error: {str(e)}")
+                    raise HTTPException(status_code=500, detail=f"Error processing PnL: {str(e)}")
+            
+            logger.info(f"Total PnL: {total_pnl}, Winning trades: {winning_trades}")
+            
+            # Calculate win rate and average PnL
+            win_rate = (winning_trades / total_positions * 100) if total_positions > 0 else 0
+            avg_pnl_per_trade = total_pnl / total_positions if total_positions > 0 else 0
+            
+            logger.info(f"Win rate: {win_rate}%, Avg PnL per trade: {avg_pnl_per_trade}")
+        except Exception as stats_error:
+            logger.error(f"Error calculating statistics: {str(stats_error)}")
+            logger.error(f"Statistics error traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Statistics calculation error: {str(stats_error)}")
         
-        # Calculate total PnL and winning trades
-        total_pnl = 0
-        winning_trades = 0
-        for pos in positions:
-            try:
-                pnl = float(pos.get('pnl', 0))
-                total_pnl += pnl
-                if pnl >= 0:
-                    winning_trades += 1
-                logger.debug(f"Position PnL: {pnl}, Running total: {total_pnl}, Winning trades: {winning_trades}")
-            except (TypeError, ValueError) as e:
-                logger.error(f"Error processing PnL for position: {pos.get('pnl')}, Error: {str(e)}")
-        
-        logger.info(f"Total PnL: {total_pnl}, Winning trades: {winning_trades}")
-        
-        # Calculate win rate and average PnL
-        win_rate = (winning_trades / total_positions * 100) if total_positions > 0 else 0
-        avg_pnl_per_trade = total_pnl / total_positions if total_positions > 0 else 0
-        
-        logger.info(f"Win rate: {win_rate}%, Avg PnL per trade: {avg_pnl_per_trade}")
-        
-        # Calculate pagination
-        total_pages = math.ceil(total_positions / limit)
-        start_idx = (page - 1) * limit
-        end_idx = start_idx + limit
-        
-        # Get paginated positions
-        paginated_positions = positions[start_idx:end_idx]
-        
-        # Format positions for response
-        formatted_positions = []
-        for pos in paginated_positions:
-            formatted_pos = {
-                'id': str(pos.get('id', '')),
-                'symbol': pos.get('symbol', ''),
-                'type': pos.get('type', ''),
-                'entry_price': float(pos.get('entry_price', 0)),
-                'exit_price': float(pos.get('exit_price', 0)),
-                'pnl': float(pos.get('pnl', 0)),
-                'closed_reason': pos.get('closed_reason', ''),
-                'duration': pos.get('duration', ''),
-                'closed_at': pos.get('closed_at', '').isoformat() if isinstance(pos.get('closed_at'), datetime) else pos.get('closed_at', '')
-            }
-            formatted_positions.append(formatted_pos)
+        try:
+            # Calculate pagination
+            total_pages = math.ceil(total_positions / limit)
+            start_idx = (page - 1) * limit
+            end_idx = start_idx + limit
+            
+            # Get paginated positions
+            paginated_positions = positions[start_idx:end_idx]
+            
+            # Format positions for response
+            formatted_positions = []
+            for pos in paginated_positions:
+                try:
+                    formatted_pos = {
+                        'id': str(pos.get('id', '')),
+                        'symbol': pos.get('symbol', ''),
+                        'type': pos.get('type', ''),
+                        'entry_price': float(pos.get('entry_price', 0)),
+                        'exit_price': float(pos.get('exit_price', 0)),
+                        'pnl': float(pos.get('pnl', 0)),
+                        'closed_reason': pos.get('closed_reason', ''),
+                        'duration': pos.get('duration', ''),
+                        'closed_at': pos.get('closed_at', '').isoformat() if isinstance(pos.get('closed_at'), datetime) else pos.get('closed_at', '')
+                    }
+                    formatted_positions.append(formatted_pos)
+                except Exception as format_error:
+                    logger.error(f"Error formatting position: {pos}, Error: {str(format_error)}")
+                    raise HTTPException(status_code=500, detail=f"Error formatting position: {str(format_error)}")
+        except Exception as pagination_error:
+            logger.error(f"Error in pagination: {str(pagination_error)}")
+            logger.error(f"Pagination error traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Pagination error: {str(pagination_error)}")
         
         stats = {
             "totalTrades": total_positions,
@@ -491,7 +523,7 @@ async def get_position_history(
         
     except Exception as e:
         logger.error(f"Error fetching position history: {str(e)}")
-        logger.error(traceback.format_exc())
+        logger.error(f"Full error traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 class ConnectionManager:
@@ -619,6 +651,10 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str = Query(...)):
             await websocket.close(code=4000, reason="Invalid symbol format")
             return
 
+        # # Accept the connection first
+        # await websocket.accept()
+        logger.info(f"server.py 656 WebSocket connection accepted for symbol: {symbol}")
+
         # Connect using the connection manager
         await manager.connect(websocket, symbol)
 
@@ -732,6 +768,17 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start periodic update task: {e}")
         logger.error(traceback.format_exc())
+
+@app.get("/health")
+async def health_check():
+    try:
+        # Test database connection
+        session = db_manager.get_session()
+        session.execute("SELECT 1")
+        return {"status": "healthy", "database": "connected"}
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

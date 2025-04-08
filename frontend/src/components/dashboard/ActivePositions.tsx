@@ -57,11 +57,12 @@ const ActivePositions = ({ positions, lastUpdated }: ActivePositionsProps) => {
                     <TableHead>Symbol</TableHead>
                     <TableHead>Type</TableHead>
                     <TableHead>Entry Price</TableHead>
+                    <TableHead>Stop Loss</TableHead>
+                    <TableHead>Take Profit</TableHead>
                     <TableHead>Current Price</TableHead>
                     <TableHead>Size</TableHead>
                     <TableHead>PnL</TableHead>
-                    <TableHead>Stop Loss</TableHead>
-                    <TableHead>Take Profit</TableHead>
+                    
                     <TableHead>Status</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -78,6 +79,8 @@ const ActivePositions = ({ positions, lastUpdated }: ActivePositionsProps) => {
                           </Badge>
                         </TableCell>
                         <TableCell>${position.entry_price}</TableCell>
+                        <TableCell className="text-red-600 dark:text-red-400">${position.stop_loss}</TableCell>
+                        <TableCell className="text-green-600 dark:text-green-400">${position.take_profit}</TableCell>
                         <TableCell>${position.current_price}</TableCell>
                         <TableCell>{position.size}</TableCell>
                         <TableCell className="whitespace-nowrap">
@@ -86,8 +89,7 @@ const ActivePositions = ({ positions, lastUpdated }: ActivePositionsProps) => {
                             ${Math.abs(position.pnl).toLocaleString()} ({Math.abs(pnlPercentage).toFixed(2)}%)
                           </div>
                         </TableCell>
-                        <TableCell className="text-red-600 dark:text-red-400">${position.stop_loss}</TableCell>
-                        <TableCell className="text-green-600 dark:text-green-400">${position.take_profit}</TableCell>
+                        
                         <TableCell>
                           <Badge variant={position.status === 'OPEN' ? 'outline' : 'secondary'}>
                             {position.status}

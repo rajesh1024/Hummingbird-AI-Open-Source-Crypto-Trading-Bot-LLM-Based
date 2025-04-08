@@ -6,6 +6,19 @@ from dotenv import load_dotenv
 from .models import Base, Position, PositionStatus
 from typing import List, Dict, Optional
 from datetime import datetime
+import logging
+import traceback
+
+# Initialize logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Create console handler with formatting
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 load_dotenv()
 
@@ -149,35 +162,51 @@ class DatabaseManager:
     ) -> List[Dict]:
         """Get closed positions with optional filtering"""
         try:
-            query = self.get_session().query(Position).filter(Position.status == PositionStatus.CLOSED)
+            logger.info("Starting get_closed_positions query")
+            session = self.get_session()
+            query = session.query(Position).filter(Position.status == PositionStatus.CLOSED)
             
             if start_date:
+                logger.debug(f"Applying start_date filter: {start_date}")
                 query = query.filter(Position.closed_at >= start_date)
             if end_date:
+                logger.debug(f"Applying end_date filter: {end_date}")
                 query = query.filter(Position.closed_at <= end_date)
             if symbol:
+                logger.debug(f"Applying symbol filter: {symbol}")
                 query = query.filter(Position.symbol == symbol)
             if type:
+                logger.debug(f"Applying type filter: {type}")
                 query = query.filter(Position.position_type == type)
             
+            logger.debug(f"Executing query: {query}")
             positions = query.order_by(Position.closed_at.desc()).all()
+            logger.info(f"Found {len(positions)} positions")
             
-            return [
-                {
-                    'symbol': pos.symbol,
-                    'type': pos.position_type.value.upper(),
-                    'entry_price': float(pos.entry_price),
-                    'exit_price': float(pos.current_price),
-                    'pnl': float(pos.pnl),
-                    'closed_reason': pos.closed_reason or '',
-                    'duration': self._calculate_duration(pos.created_at, pos.closed_at),
-                    'created_at': pos.created_at,
-                    'closed_at': pos.closed_at
-                }
-                for pos in positions
-            ]
+            result = []
+            for pos in positions:
+                try:
+                    position_dict = {
+                        'symbol': pos.symbol,
+                        'type': pos.position_type.value.upper(),
+                        'entry_price': float(pos.entry_price),
+                        'exit_price': float(pos.current_price),
+                        'pnl': float(pos.pnl),
+                        'closed_reason': pos.closed_reason or '',
+                        'duration': self._calculate_duration(pos.created_at, pos.closed_at),
+                        'created_at': pos.created_at,
+                        'closed_at': pos.closed_at
+                    }
+                    result.append(position_dict)
+                except Exception as e:
+                    logger.error(f"Error processing position {pos.id}: {str(e)}")
+                    logger.error(f"Position data: symbol={pos.symbol}, type={pos.position_type}, entry_price={pos.entry_price}, current_price={pos.current_price}, pnl={pos.pnl}")
+            
+            return result
+            
         except Exception as e:
-            print(f"Error getting closed positions: {e}")
+            logger.error(f"Error in get_closed_positions: {str(e)}")
+            logger.error(traceback.format_exc())
             return []
 
     def _calculate_duration(self, start: datetime, end: datetime) -> str:
